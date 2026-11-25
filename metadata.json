@@ -1,0 +1,6 @@
+{
+  "name": "AnimeFit — Ki Workout Tracker",
+  "description": "Entrena como tu guerrero anime favorito: +105 personajes con evoluciones reales, biblioteca de +125 ejercicios, generador de rutinas, récords personales y comunidad.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "studio.ai.animefit_ki_workout_tracker.twa",
+      "sha256_cert_fingerprints": [
+        "32:28:37:60:97:30:21:D8:1C:D7:C4:AB:A7:25:07:D0:CE:BF:88:27:8E:83:F8:BC:A1:2C:6B:7B:05:5D:9A:46"
+      ]
+    }
+  }
+]
