@@ -13,7 +13,6 @@ import { CharacterAvatar } from './components/CharacterAvatar';
 import { CharacterTab } from './components/CharacterTab';
 import { Modal } from './components/Modal';
 import { OnboardingScreen } from './components/OnboardingScreen';
-import { PWAInstallButton } from './components/PWAInstallButton';
 import { PvpTab } from './components/PvpTab';
 import { RankingTab } from './components/RankingTab';
 import { StoryTab } from './components/StoryTab';
@@ -33,6 +32,7 @@ import {
   ExerciseDef,
   MainTab,
   Routine,
+  RoutineFolder,
   StoryChapter,
   StoryProgress,
   UserProfile,
@@ -638,8 +638,14 @@ export default function App() {
     [currentUser, pushToast, updateDb]
   );
 
-  const handleAddGeneratedRoutines = (generated: Routine[]) => {
+  const handleAddGeneratedRoutines = (
+    generated: Routine[],
+    folderId?: string
+  ) => {
     if (!currentUser) return;
+    const withFolder = folderId
+      ? generated.map((r) => ({ ...r, folderId }))
+      : generated;
     updateDb((prev) => {
       const u = prev.users[currentUser.username];
       return {
@@ -648,7 +654,7 @@ export default function App() {
           ...prev.users,
           [currentUser.username]: {
             ...u,
-            routines: [...generated, ...u.routines],
+            routines: [...withFolder, ...u.routines],
           },
         },
       };
@@ -656,6 +662,107 @@ export default function App() {
     pushToast(
       `🤖 ¡Se crearon ${generated.length} rutinas listas para entrenar!`
     );
+  };
+
+  const handleSaveFolder = (
+    folder: RoutineFolder,
+    selectedRoutineIds?: string[]
+  ) => {
+    if (!currentUser) return;
+    updateDb((prev) => {
+      const u = prev.users[currentUser.username];
+      const existingFolders = u.routineFolders || [];
+      const exists = existingFolders.some((f) => f.id === folder.id);
+      const nextFolders = exists
+        ? existingFolders.map((f) => (f.id === folder.id ? folder : f))
+        : [folder, ...existingFolders];
+
+      let nextRoutines = u.routines;
+      if (Array.isArray(selectedRoutineIds)) {
+        const selectedSet = new Set(selectedRoutineIds);
+        nextRoutines = u.routines.map((r) => {
+          if (selectedSet.has(r.id)) {
+            return { ...r, folderId: folder.id };
+          }
+          if (r.folderId === folder.id) {
+            const copy = { ...r };
+            delete copy.folderId;
+            return copy;
+          }
+          return r;
+        });
+      }
+
+      return {
+        ...prev,
+        users: {
+          ...prev.users,
+          [currentUser.username]: {
+            ...u,
+            routineFolders: nextFolders,
+            routines: nextRoutines,
+          },
+        },
+      };
+    });
+    pushToast(`📁 Carpeta "${folder.name}" guardada.`);
+  };
+
+  const handleDeleteFolder = (folderId: string) => {
+    if (!currentUser) return;
+    updateDb((prev) => {
+      const u = prev.users[currentUser.username];
+      const nextFolders = (u.routineFolders || []).filter(
+        (f) => f.id !== folderId
+      );
+      const nextRoutines = u.routines.map((r) => {
+        if (r.folderId !== folderId) return r;
+        const copy = { ...r };
+        delete copy.folderId;
+        return copy;
+      });
+      return {
+        ...prev,
+        users: {
+          ...prev.users,
+          [currentUser.username]: {
+            ...u,
+            routineFolders: nextFolders,
+            routines: nextRoutines,
+          },
+        },
+      };
+    });
+    pushToast('Carpeta eliminada. Tus rutinas se conservaron.');
+  };
+
+  const handleMoveRoutineToFolder = (
+    routineId: string,
+    folderId: string | null
+  ) => {
+    if (!currentUser) return;
+    updateDb((prev) => {
+      const u = prev.users[currentUser.username];
+      const nextRoutines = u.routines.map((r) => {
+        if (r.id !== routineId) return r;
+        if (!folderId) {
+          const copy = { ...r };
+          delete copy.folderId;
+          return copy;
+        }
+        return { ...r, folderId };
+      });
+      return {
+        ...prev,
+        users: {
+          ...prev.users,
+          [currentUser.username]: {
+            ...u,
+            routines: nextRoutines,
+          },
+        },
+      };
+    });
   };
 
   const handleSaveCustomExercise = (ex: ExerciseDef) => {
@@ -1164,7 +1271,6 @@ export default function App() {
             >
               <HelpCircle className="w-4 h-4" />
             </button>
-            <PWAInstallButton compact onNotify={pushToast} />
             <button
               type="button"
               onClick={() => setEditingProfileOpen(true)}
@@ -1209,6 +1315,9 @@ export default function App() {
             onTogglePublishRoutine={handleTogglePublishRoutine}
             onSetStoryRoutine={handleSetStoryRoutine}
             onAddGeneratedRoutines={handleAddGeneratedRoutines}
+            onSaveFolder={handleSaveFolder}
+            onDeleteFolder={handleDeleteFolder}
+            onMoveRoutineToFolder={handleMoveRoutineToFolder}
             onSaveCustomExercise={handleSaveCustomExercise}
             onUpdateWellness={handleUpdateWellness}
             pedometerStatus={pedometerStatus}

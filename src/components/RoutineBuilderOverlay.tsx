@@ -211,14 +211,32 @@ export function RoutineBuilderOverlay({
 
       {/* Scrollable Body */}
       <div className="flex-1 overflow-y-auto px-4 py-4 pb-[max(2rem,env(safe-area-inset-bottom))] max-w-2xl w-full mx-auto flex flex-col gap-5">
-        {/* Routine Name Input */}
-        <div>
+        {/* Routine Name Input + Optional Folder Picker */}
+        <div className="flex flex-col gap-2.5">
           <input
             value={draft.name}
             onChange={(e) => onChangeDraft({ ...draft, name: e.target.value })}
             placeholder="Nombre de tu rutina (ej: Día de Empuje)"
             className="w-full min-h-[46px] bg-[#0A0B0F] border border-[#1B1E26] rounded-xl px-4 text-sm font-bold text-[#F1F5F9] placeholder:text-[#64748B] focus:outline-none focus:border-[#38BDF8]"
           />
+          {(user.routineFolders || []).length > 0 && (
+            <select
+              aria-label="Carpeta de la rutina"
+              value={draft.folderId || ''}
+              onChange={(e) => {
+                const nextFolderId = e.target.value || undefined;
+                onChangeDraft({ ...draft, folderId: nextFolderId });
+              }}
+              className="w-full min-h-[42px] bg-[#0A0B0F] border border-[#1B1E26] rounded-xl px-3.5 text-xs font-bold text-[#F1F5F9] focus:outline-none focus:border-[#38BDF8]"
+            >
+              <option value="">📁 Sin carpeta (Lista principal)</option>
+              {(user.routineFolders || []).map((f) => (
+                <option key={f.id} value={f.id}>
+                  📁 Carpeta: {f.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
         {/* Horizontal Exercise Bubbles Strip + Add (+) Circle */}

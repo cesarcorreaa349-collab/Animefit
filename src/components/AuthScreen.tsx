@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { CHARACTERS } from '../data/characters';
-import { PWAInstallButton } from './PWAInstallButton';
 
 interface AuthScreenProps {
   onLogin: (identifier: string, pass: string) => void;
@@ -29,10 +28,9 @@ export function AuthScreen({ onLogin, onRegister }: AuthScreenProps) {
             ⚡ ANIME<span className="text-[#FACC15]">FIT</span>
           </div>
           <div className="flex items-center gap-2.5">
-            <span className="hidden sm:inline text-xs font-medium text-[#8A92A2] whitespace-nowrap">
+            <span className="text-xs font-medium text-[#8A92A2] whitespace-nowrap">
               Ki Workout Tracker
             </span>
-            <PWAInstallButton compact />
           </div>
         </div>
       </header>

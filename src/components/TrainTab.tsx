@@ -1,5 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
-import { HelpCircle, Pencil, Play, Plus, Trash2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  Check,
+  ChevronRight,
+  Folder,
+  FolderInput,
+  FolderOpen,
+  FolderPlus,
+  HelpCircle,
+  Pencil,
+  Play,
+  Plus,
+  Trash2,
+} from 'lucide-react';
 import {
   ActiveWorkout,
   DailyWellnessState,
@@ -7,6 +20,7 @@ import {
   ExerciseLocationType,
   ExerciseMuscle,
   Routine,
+  RoutineFolder,
   UserProfile,
   WorkoutSummaryInfo,
 } from '../types/animefit';
@@ -41,7 +55,10 @@ interface TrainTabProps {
   onDeleteRoutine: (routineId: string) => void;
   onTogglePublishRoutine: (routineId: string) => void;
   onSetStoryRoutine: (routineId: string) => void;
-  onAddGeneratedRoutines: (routines: Routine[]) => void;
+  onAddGeneratedRoutines: (routines: Routine[], folderId?: string) => void;
+  onSaveFolder: (folder: RoutineFolder, selectedRoutineIds?: string[]) => void;
+  onDeleteFolder: (folderId: string) => void;
+  onMoveRoutineToFolder: (routineId: string, folderId: string | null) => void;
   onSaveCustomExercise: (ex: ExerciseDef) => void;
   onUpdateWellness: (
     nextWellness: DailyWellnessState,
@@ -90,6 +107,9 @@ export function TrainTab({
   onTogglePublishRoutine,
   onSetStoryRoutine,
   onAddGeneratedRoutines,
+  onSaveFolder,
+  onDeleteFolder,
+  onMoveRoutineToFolder,
   onSaveCustomExercise,
   onUpdateWellness,
   pedometerStatus,
@@ -147,6 +167,18 @@ export function TrainTab({
     string | null
   >(null);
 
+  // Routine folders state
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
+  const [folderModalOpen, setFolderModalOpen] = useState(false);
+  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
+  const [folderNameInput, setFolderNameInput] = useState('');
+  const [folderRoutineIds, setFolderRoutineIds] = useState<string[]>([]);
+  const [confirmDeleteFolderId, setConfirmDeleteFolderId] = useState<
+    string | null
+  >(null);
+  const [moveRoutineId, setMoveRoutineId] = useState<string | null>(null);
+  const [aiFolderId, setAiFolderId] = useState<string>('');
+
   // Live timer tick for active workout + rest countdown
   useEffect(() => {
     if (!activeWorkout) return;
@@ -197,7 +229,7 @@ export function TrainTab({
     setSelectorMode(mode);
   };
 
-  const openBuilder = (existing?: Routine) => {
+  const openBuilder = (existing?: Routine, defaultFolderId?: string) => {
     setBuilderSelectedIdx(0);
     if (existing) {
       setBuilderDraft(JSON.parse(JSON.stringify(existing)));
@@ -209,6 +241,7 @@ export function TrainTab({
         author: user.username,
         likes: 0,
         exercises: [],
+        folderId: defaultFolderId || activeFolderId || undefined,
       });
     }
     setBuilderOpen(true);
@@ -302,6 +335,59 @@ export function TrainTab({
     : undefined;
 
   const routines = user.routines || [];
+  const folders = user.routineFolders || [];
+  const folderIdsSet = new Set(folders.map((f) => f.id));
+  const activeFolder = activeFolderId
+    ? folders.find((f) => f.id === activeFolderId) || null
+    : null;
+  const visibleRoutines = activeFolder
+    ? routines.filter((r) => r.folderId === activeFolder.id)
+    : routines.filter((r) => !r.folderId || !folderIdsSet.has(r.folderId));
+
+  const openCreateFolderModal = () => {
+    setEditingFolderId(null);
+    setFolderNameInput('');
+    setFolderRoutineIds([]);
+    setFolderModalOpen(true);
+  };
+
+  const openEditFolderModal = (folder: RoutineFolder) => {
+    setEditingFolderId(folder.id);
+    setFolderNameInput(folder.name);
+    setFolderRoutineIds(
+      routines.filter((r) => r.folderId === folder.id).map((r) => r.id)
+    );
+    setFolderModalOpen(true);
+  };
+
+  const toggleFolderRoutineSelection = (routineId: string) => {
+    setFolderRoutineIds((prev) =>
+      prev.includes(routineId)
+        ? prev.filter((id) => id !== routineId)
+        : [...prev, routineId]
+    );
+  };
+
+  const handleSaveFolderModal = () => {
+    const name = folderNameInput.trim();
+    if (!name) {
+      onToast('Escribe un nombre para la carpeta.');
+      return;
+    }
+    const existing = editingFolderId
+      ? folders.find((f) => f.id === editingFolderId)
+      : null;
+    const folder: RoutineFolder = {
+      id: existing ? existing.id : `fld_${Date.now()}`,
+      name,
+      createdAt: existing ? existing.createdAt : new Date().toISOString(),
+    };
+    onSaveFolder(folder, folderRoutineIds);
+    setFolderModalOpen(false);
+    if (!existing) {
+      setActiveFolderId(folder.id);
+    }
+  };
 
   // ACTIVE WORKOUT VIEW
   if (activeWorkout) {
@@ -1184,7 +1270,10 @@ export function TrainTab({
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           <button
             type="button"
-            onClick={() => setAiOpen(true)}
+            onClick={() => {
+              setAiFolderId(activeFolder ? activeFolder.id : '');
+              setAiOpen(true);
+            }}
             className="min-h-[44px] px-4 rounded-xl bg-gradient-to-br from-[#0EA5E9] to-[#0369A1] text-[#030406] text-sm font-bold"
           >
             🤖 Crear Rutina Automática
@@ -1216,21 +1305,162 @@ export function TrainTab({
         onToast={onToast}
       />
 
-      <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="text-base font-extrabold text-[#F1F5F9]">
-            Mis Rutinas ({routines.length})
-          </h3>
-          <span className="text-xs text-[#8A92A2]">1 toque para entrenar</span>
-        </div>
+      <section className="flex flex-col gap-3.5">
+        {activeFolder ? (
+          <div className="bg-[#0A0B0F] border border-[#1B1E26] rounded-2xl p-4 flex flex-col gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setActiveFolderId(null)}
+                  className="min-h-[38px] px-3 rounded-xl bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-xs font-bold text-[#F1F5F9] inline-flex items-center gap-1.5 shrink-0"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  Carpetas
+                </button>
+                <div className="min-w-0 flex items-center gap-2">
+                  <FolderOpen className="w-4 h-4 text-[#38BDF8] shrink-0" />
+                  <h3 className="text-base font-extrabold text-[#F1F5F9] truncate">
+                    {activeFolder.name}
+                  </h3>
+                  <span className="text-xs font-bold text-[#8A92A2] tabular-nums shrink-0">
+                    ({visibleRoutines.length})
+                  </span>
+                </div>
+              </div>
 
-        {routines.length === 0 ? (
-          <div className="bg-[#0A0B0F] border border-[#1B1E26] rounded-2xl p-6 text-center text-sm text-[#8A92A2]">
-            No tienes rutinas aún. Crea una manualmente o usa el generador automático.
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => openEditFolderModal(activeFolder)}
+                  className="min-h-[38px] px-3 rounded-xl bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-xs font-bold text-[#F1F5F9] inline-flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  <Pencil className="w-3.5 h-3.5 text-[#38BDF8]" />
+                  Editar / Rutinas
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openBuilder(undefined, activeFolder.id)}
+                  className="min-h-[38px] px-3 rounded-xl bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] text-xs font-extrabold inline-flex items-center gap-1.5 whitespace-nowrap"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Nueva rutina
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Eliminar carpeta ${activeFolder.name}`}
+                  onClick={() => setConfirmDeleteFolderId(activeFolder.id)}
+                  className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-xl bg-[#EF4444]/15 border border-[#EF4444]/35 text-[#FCA5A5]"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-base font-extrabold text-[#F1F5F9]">
+                Mis Rutinas ({routines.length})
+              </h3>
+              <span className="text-xs text-[#8A92A2]">
+                Organiza tus rutinas por carpetas o entrena en 1 toque
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={openCreateFolderModal}
+              className="min-h-[40px] px-3.5 rounded-xl bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] text-xs font-extrabold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            >
+              <FolderPlus className="w-4 h-4" />
+              Nueva carpeta
+            </button>
+          </div>
+        )}
+
+        {!activeFolder && folders.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {folders.map((folder) => {
+              const inside = routines.filter((r) => r.folderId === folder.id);
+              const previewNames = inside
+                .slice(0, 3)
+                .map((r) => r.name)
+                .join(' · ');
+              return (
+                <div
+                  key={folder.id}
+                  className="bg-[#0A0B0F] border border-[#1B1E26] hover:border-[#38BDF8]/60 rounded-2xl p-4 flex items-center justify-between gap-3 transition-colors"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setActiveFolderId(folder.id)}
+                    className="flex-1 min-w-0 text-left flex items-center gap-3"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-[#101218] border border-[#1B1E26] flex items-center justify-center text-[#38BDF8] shrink-0">
+                      <Folder className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-extrabold text-[#F1F5F9] truncate">
+                          {folder.name}
+                        </span>
+                        <span className="text-xs font-bold text-[#38BDF8] tabular-nums shrink-0">
+                          {inside.length} {inside.length === 1 ? 'rutina' : 'rutinas'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-[#8A92A2] truncate mt-0.5">
+                        {inside.length > 0
+                          ? `${previewNames}${inside.length > 3 ? ` · +${inside.length - 3} más` : ''}`
+                          : 'Carpeta vacía · Toca para agregar rutinas'}
+                      </p>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-[#8A92A2] shrink-0" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Editar carpeta ${folder.name}`}
+                    onClick={() => openEditFolderModal(folder)}
+                    className="min-h-[38px] min-w-[38px] rounded-xl bg-[#101218] border border-[#1B1E26] text-[#8A92A2] hover:text-[#F1F5F9] flex items-center justify-center shrink-0"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {visibleRoutines.length === 0 ? (
+          <div className="bg-[#0A0B0F] border border-[#1B1E26] rounded-2xl p-6 text-center flex flex-col items-center gap-3">
+            <p className="text-sm text-[#8A92A2]">
+              {activeFolder
+                ? `La carpeta "${activeFolder.name}" aún no tiene rutinas.`
+                : folders.length > 0
+                ? 'Todas tus rutinas están organizadas dentro de tus carpetas.'
+                : 'No tienes rutinas aún. Crea una manualmente o usa el generador automático.'}
+            </p>
+            {activeFolder && (
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => openEditFolderModal(activeFolder)}
+                  className="min-h-[40px] px-4 rounded-xl bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-xs font-bold text-[#F1F5F9]"
+                >
+                  Agregar rutinas existentes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openBuilder(undefined, activeFolder.id)}
+                  className="min-h-[40px] px-4 rounded-xl bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-xs font-extrabold text-[#F1F5F9]"
+                >
+                  + Crear nueva rutina aquí
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {routines.map((r) => {
+            {visibleRoutines.map((r) => {
               const exPreview = r.exercises
                 .map((re) => {
                   const ex = getExerciseById(re.exId, user);
@@ -1303,6 +1533,14 @@ export function TrainTab({
                     >
                       <Pencil className="w-3.5 h-3.5" />
                       Editar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMoveRoutineId(r.id)}
+                      className="min-h-[36px] px-3 rounded-lg bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-xs font-bold text-[#F1F5F9] inline-flex items-center gap-1.5"
+                    >
+                      <FolderInput className="w-3.5 h-3.5 text-[#38BDF8]" />
+                      Carpeta
                     </button>
                     <button
                       type="button"
@@ -1453,6 +1691,26 @@ export function TrainTab({
             </select>
           </div>
 
+          {folders.length > 0 && (
+            <div>
+              <label className="block text-xs font-semibold text-[#8A92A2] mb-1.5">
+                Guardar en carpeta (opcional)
+              </label>
+              <select
+                value={aiFolderId}
+                onChange={(e) => setAiFolderId(e.target.value)}
+                className="w-full min-h-[44px] bg-[#07080B] border border-[#1B1E26] rounded-xl px-3 text-sm text-[#F1F5F9]"
+              >
+                <option value="">Sin carpeta (Lista principal)</option>
+                {folders.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    📁 {f.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <label className="flex items-center gap-2.5 text-sm text-[#F1F5F9] cursor-pointer">
             <input
               type="checkbox"
@@ -1474,12 +1732,230 @@ export function TrainTab({
                 publish: aiPublish,
                 username: user.username,
               });
-              onAddGeneratedRoutines(generated);
+              onAddGeneratedRoutines(generated, aiFolderId || undefined);
               setAiOpen(false);
             }}
             className="min-h-[46px] w-full rounded-xl bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] text-sm font-bold"
           >
             ⚡ Generar Mis Rutinas
+          </button>
+        </div>
+      </Modal>
+
+      {/* Create / Edit Routine Folder Modal (with multi-routine selection) */}
+      <Modal
+        open={folderModalOpen}
+        title={editingFolderId ? 'Editar Carpeta' : 'Nueva Carpeta de Rutinas'}
+        onClose={() => setFolderModalOpen(false)}
+        maxWidthClass="max-w-md"
+      >
+        <div className="flex flex-col gap-3.5">
+          <div>
+            <label className="block text-xs font-semibold text-[#8A92A2] mb-1.5">
+              Nombre de la carpeta
+            </label>
+            <input
+              value={folderNameInput}
+              onChange={(e) => setFolderNameInput(e.target.value)}
+              placeholder="Ej: Push / Pull / Legs, Volumen, Casa..."
+              className="w-full min-h-[44px] bg-[#07080B] border border-[#1B1E26] rounded-xl px-3.5 text-sm font-bold text-[#F1F5F9] focus:outline-none focus:border-[#38BDF8]"
+            />
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs font-semibold text-[#8A92A2]">
+                Rutinas dentro de esta carpeta ({folderRoutineIds.length})
+              </span>
+              {routines.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setFolderRoutineIds(
+                      folderRoutineIds.length === routines.length
+                        ? []
+                        : routines.map((r) => r.id)
+                    )
+                  }
+                  className="text-[11px] font-bold text-[#38BDF8]"
+                >
+                  {folderRoutineIds.length === routines.length
+                    ? 'Quitar todas'
+                    : 'Seleccionar todas'}
+                </button>
+              )}
+            </div>
+
+            {routines.length === 0 ? (
+              <p className="text-xs text-[#8A92A2] rounded-xl bg-[#07080B] border border-[#1B1E26] p-3">
+                Aún no tienes rutinas creadas. Guarda la carpeta y luego crea rutinas directamente dentro de ella.
+              </p>
+            ) : (
+              <div className="max-h-56 overflow-y-auto flex flex-col gap-1.5 pr-1">
+                {routines.map((r) => {
+                  const checked = folderRoutineIds.includes(r.id);
+                  const otherFolder =
+                    r.folderId && r.folderId !== editingFolderId
+                      ? folders.find((f) => f.id === r.folderId)
+                      : null;
+                  return (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => toggleFolderRoutineSelection(r.id)}
+                      className={`min-h-[42px] px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-colors ${
+                        checked
+                          ? 'bg-[#1E40AF]/25 border-[#38BDF8]/60 text-[#F1F5F9]'
+                          : 'bg-[#07080B] border-[#1B1E26] text-[#8A92A2] hover:text-[#F1F5F9]'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-[#F1F5F9] truncate">
+                          {r.name}
+                        </div>
+                        <div className="text-[11px] text-[#8A92A2] truncate">
+                          {r.exercises.length} ejercicios
+                          {otherFolder ? ` · En "${otherFolder.name}"` : ''}
+                        </div>
+                      </div>
+                      <span
+                        className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 ${
+                          checked
+                            ? 'bg-[#1D4ED8] border-[#38BDF8] text-[#F1F5F9]'
+                            : 'bg-[#101218] border-[#1B1E26]'
+                        }`}
+                      >
+                        {checked && <Check className="w-3.5 h-3.5" />}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={handleSaveFolderModal}
+            className="min-h-[44px] w-full rounded-xl bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] text-sm font-extrabold inline-flex items-center justify-center gap-1.5"
+          >
+            <Check className="w-4 h-4" />
+            {editingFolderId ? 'Guardar cambios' : 'Crear carpeta'}
+          </button>
+        </div>
+      </Modal>
+
+      {/* Move Single Routine to Folder Modal */}
+      <Modal
+        open={moveRoutineId !== null}
+        title="Mover Rutina a Carpeta"
+        onClose={() => setMoveRoutineId(null)}
+        maxWidthClass="max-w-md"
+      >
+        {moveRoutineId && (() => {
+          const targetRoutine = routines.find((r) => r.id === moveRoutineId);
+          if (!targetRoutine) return null;
+          return (
+            <div className="flex flex-col gap-2.5">
+              <p className="text-xs text-[#8A92A2]">
+                Elige dónde guardar <strong className="text-[#F1F5F9]">{targetRoutine.name}</strong>:
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  onMoveRoutineToFolder(targetRoutine.id, null);
+                  setMoveRoutineId(null);
+                  onToast('Rutina movida a la lista principal.');
+                }}
+                className={`min-h-[42px] px-3.5 rounded-xl border text-left text-xs font-bold flex items-center justify-between ${
+                  !targetRoutine.folderId || !folderIdsSet.has(targetRoutine.folderId)
+                    ? 'bg-[#1E40AF]/25 border-[#38BDF8]/60 text-[#F1F5F9]'
+                    : 'bg-[#07080B] border-[#1B1E26] text-[#8A92A2] hover:text-[#F1F5F9]'
+                }`}
+              >
+                <span>Sin carpeta (Lista principal)</span>
+                {(!targetRoutine.folderId || !folderIdsSet.has(targetRoutine.folderId)) && (
+                  <Check className="w-4 h-4 text-[#38BDF8]" />
+                )}
+              </button>
+
+              {folders.map((f) => {
+                const isCurrent = targetRoutine.folderId === f.id;
+                return (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => {
+                      onMoveRoutineToFolder(targetRoutine.id, f.id);
+                      setMoveRoutineId(null);
+                      onToast(`Rutina movida a "${f.name}".`);
+                    }}
+                    className={`min-h-[42px] px-3.5 rounded-xl border text-left text-xs font-bold flex items-center justify-between ${
+                      isCurrent
+                        ? 'bg-[#1E40AF]/25 border-[#38BDF8]/60 text-[#F1F5F9]'
+                        : 'bg-[#07080B] border-[#1B1E26] text-[#F1F5F9] hover:border-[#38BDF8]'
+                    }`}
+                  >
+                    <span className="inline-flex items-center gap-2 truncate">
+                      <Folder className="w-4 h-4 text-[#38BDF8] shrink-0" />
+                      <span className="truncate">{f.name}</span>
+                    </span>
+                    {isCurrent && <Check className="w-4 h-4 text-[#38BDF8] shrink-0" />}
+                  </button>
+                );
+              })}
+
+              <button
+                type="button"
+                onClick={() => {
+                  const rid = targetRoutine.id;
+                  setMoveRoutineId(null);
+                  setEditingFolderId(null);
+                  setFolderNameInput('');
+                  setFolderRoutineIds([rid]);
+                  setFolderModalOpen(true);
+                }}
+                className="min-h-[42px] px-3.5 rounded-xl bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] text-xs font-extrabold inline-flex items-center justify-center gap-1.5 mt-1"
+              >
+                <FolderPlus className="w-4 h-4" />
+                Crear nueva carpeta con esta rutina
+              </button>
+            </div>
+          );
+        })()}
+      </Modal>
+
+      {/* Confirm Delete Folder Modal */}
+      <Modal
+        open={confirmDeleteFolderId !== null}
+        title="Eliminar Carpeta"
+        onClose={() => setConfirmDeleteFolderId(null)}
+      >
+        <p className="text-sm text-[#8A92A2]">
+          ¿Seguro que deseas eliminar esta carpeta? Tus rutinas NO se borrarán: volverán a la lista principal.
+        </p>
+        <div className="flex gap-2 justify-end">
+          <button
+            type="button"
+            onClick={() => setConfirmDeleteFolderId(null)}
+            className="min-h-[42px] px-4 rounded-xl bg-[#101218] border border-[#1B1E26] text-xs font-bold text-[#F1F5F9]"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (confirmDeleteFolderId) {
+                onDeleteFolder(confirmDeleteFolderId);
+                if (activeFolderId === confirmDeleteFolderId) {
+                  setActiveFolderId(null);
+                }
+              }
+              setConfirmDeleteFolderId(null);
+            }}
+            className="min-h-[42px] px-4 rounded-xl bg-[#EF4444]/15 border border-[#EF4444]/35 text-xs font-bold text-[#FCA5A5]"
+          >
+            Eliminar carpeta
           </button>
         </div>
       </Modal>

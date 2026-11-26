@@ -47,6 +47,7 @@ interface DbUserRecord {
   groups: string[];
   customExercises: unknown[];
   routines: Routine[];
+  routineFolders?: unknown[];
   storyRoutineId?: string;
   pvpWins?: number;
   pvpLosses?: number;
@@ -997,6 +998,9 @@ async function startServer() {
         routines: Array.isArray(incoming.routines)
           ? incoming.routines
           : existing.routines,
+        routineFolders: Array.isArray(incoming.routineFolders)
+          ? incoming.routineFolders
+          : existing.routineFolders,
         storyRoutineId:
           typeof incoming.storyRoutineId === 'string'
             ? incoming.storyRoutineId

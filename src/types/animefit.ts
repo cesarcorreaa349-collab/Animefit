@@ -55,6 +55,12 @@ export interface RoutineExerciseItem {
   notes?: string;
 }
 
+export interface RoutineFolder {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
 export interface Routine {
   id: string;
   name: string;
@@ -62,6 +68,7 @@ export interface Routine {
   author: string;
   likes: number;
   exercises: RoutineExerciseItem[];
+  folderId?: string;
 }
 
 export interface WorkoutSet {
@@ -201,6 +208,7 @@ export interface UserProfile {
   groups: string[];
   customExercises: ExerciseDef[];
   routines: Routine[];
+  routineFolders?: RoutineFolder[];
   storyRoutineId?: string;
   pvpWins?: number;
   pvpLosses?: number;
