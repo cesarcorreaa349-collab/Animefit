@@ -117,6 +117,57 @@ function hashSessionToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
+const WS_SIGNING_SECRET =
+  process.env.SESSION_SECRET?.trim() || crypto.randomBytes(32).toString('hex');
+
+function signWsToken(username: string, ttlMs = 10 * 60 * 1000): string {
+  const payload = Buffer.from(
+    JSON.stringify({ u: username, exp: Date.now() + ttlMs }),
+    'utf8'
+  ).toString('base64url');
+  const sig = crypto
+    .createHmac('sha256', WS_SIGNING_SECRET)
+    .update(payload)
+    .digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+function verifyWsToken(
+  token: string | null | undefined,
+  db: DbShape
+): string | null {
+  if (!token || typeof token !== 'string') return null;
+  const dotIdx = token.indexOf('.');
+  if (dotIdx <= 0) return null;
+  const payload = token.slice(0, dotIdx);
+  const sig = token.slice(dotIdx + 1);
+  if (!payload || !sig) return null;
+  try {
+    const expectedSig = crypto
+      .createHmac('sha256', WS_SIGNING_SECRET)
+      .update(payload)
+      .digest('base64url');
+    const a = Buffer.from(sig, 'utf8');
+    const b = Buffer.from(expectedSig, 'utf8');
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      return null;
+    }
+    const parsed = JSON.parse(
+      Buffer.from(payload, 'base64url').toString('utf8')
+    ) as { u?: unknown; exp?: unknown };
+    if (
+      typeof parsed.u !== 'string' ||
+      typeof parsed.exp !== 'number' ||
+      parsed.exp <= Date.now()
+    ) {
+      return null;
+    }
+    return resolveUsernameKey(db.users, parsed.u);
+  } catch {
+    return null;
+  }
+}
+
 let memorySessions: Record<string, SessionRecord> | null = null;
 
 function readSessions(): Record<string, SessionRecord> {
@@ -378,17 +429,43 @@ function resolveUsernameKey(
   return found ? found.username : null;
 }
 
+function extractBearerToken(authHeader: string | undefined): string | null {
+  if (!authHeader || typeof authHeader !== 'string') return null;
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!match) return null;
+  const token = match[1].trim();
+  return token || null;
+}
+
 function getAuthenticatedUsername(
-  cookieHeader: string | undefined,
+  headersOrCookie:
+    | string
+    | { cookie?: string; authorization?: string }
+    | undefined,
   db: DbShape
 ): string | null {
+  const cookieHeader =
+    typeof headersOrCookie === 'string'
+      ? headersOrCookie
+      : headersOrCookie?.cookie;
+  const authHeader =
+    typeof headersOrCookie === 'object' && headersOrCookie
+      ? headersOrCookie.authorization
+      : undefined;
+
+  const bearerToken = extractBearerToken(authHeader);
   const cookies = parseCookies(cookieHeader);
-  const token = cookies[SESSION_COOKIE];
-  if (!token) return null;
+  const cookieToken = cookies[SESSION_COOKIE];
   const sessions = readSessions();
-  const rec = sessions[hashSessionToken(token)];
-  if (!rec) return null;
-  return resolveUsernameKey(db.users, rec.username);
+
+  for (const candidate of [bearerToken, cookieToken]) {
+    if (!candidate) continue;
+    const rec = sessions[hashSessionToken(candidate)];
+    if (!rec) continue;
+    const resolved = resolveUsernameKey(db.users, rec.username);
+    if (resolved) return resolved;
+  }
+  return null;
 }
 
 function sanitizeSelfUser(u: DbUserRecord): UserProfile {
@@ -570,7 +647,7 @@ async function startServer() {
 
   app.get('/api/auth/me', (req, res) => {
     const db = readPersistedState();
-    const uname = getAuthenticatedUsername(req.headers.cookie, db);
+    const uname = getAuthenticatedUsername(req.headers, db);
     const me = uname ? db.users[uname] : null;
     res.setHeader('Cache-Control', 'no-store');
     res.json({
@@ -578,6 +655,22 @@ async function startServer() {
       activeWorkout: uname ? db.activeWorkouts[uname] || null : null,
       groups: db.groups || [],
       publicUsers: sanitizePublicUsers(db.users),
+      wsToken: uname ? signWsToken(uname) : null,
+    });
+  });
+
+  app.get('/api/auth/ws-token', (req, res) => {
+    const db = readPersistedState();
+    const uname = getAuthenticatedUsername(req.headers, db);
+    res.setHeader('Cache-Control', 'no-store');
+    if (!uname || !db.users[uname]) {
+      res.status(401).json({ error: 'Sesión expirada o no iniciada.' });
+      return;
+    }
+    res.json({
+      ok: true,
+      username: uname,
+      wsToken: signWsToken(uname),
     });
   });
 
@@ -633,6 +726,8 @@ async function startServer() {
       activeWorkout: db.activeWorkouts[found.username] || null,
       groups: db.groups || [],
       publicUsers: sanitizePublicUsers(db.users),
+      sessionToken: token,
+      wsToken: signWsToken(found.username),
     });
   });
 
@@ -738,13 +833,16 @@ async function startServer() {
       activeWorkout: null,
       groups: db.groups || [],
       publicUsers: sanitizePublicUsers(db.users),
+      sessionToken: token,
+      wsToken: signWsToken(newUser.username),
     });
   });
 
   app.post('/api/auth/logout', (req, res) => {
     if (!verifyMutationOrigin(req, res)) return;
     const cookies = parseCookies(req.headers.cookie);
-    const token = cookies[SESSION_COOKIE];
+    const token =
+      extractBearerToken(req.headers.authorization) || cookies[SESSION_COOKIE];
     if (token) {
       const sessions = readSessions();
       const h = hashSessionToken(token);
@@ -760,7 +858,7 @@ async function startServer() {
   app.post('/api/auth/change-password', (req, res) => {
     if (!verifyMutationOrigin(req, res)) return;
     const db = readPersistedState();
-    const uname = getAuthenticatedUsername(req.headers.cookie, db);
+    const uname = getAuthenticatedUsername(req.headers, db);
     if (!uname || !db.users[uname]) {
       res.status(401).json({ error: 'Sesión expirada o no iniciada.' });
       return;
@@ -800,13 +898,13 @@ async function startServer() {
     writeSessions(sessions);
     setSessionCookie(req, res, freshToken);
 
-    res.json({ ok: true });
+    res.json({ ok: true, sessionToken: freshToken, wsToken: signWsToken(uname) });
   });
 
   app.delete('/api/auth/account', (req, res) => {
     if (!verifyMutationOrigin(req, res)) return;
     const db = readPersistedState();
-    const uname = getAuthenticatedUsername(req.headers.cookie, db);
+    const uname = getAuthenticatedUsername(req.headers, db);
     if (!uname) {
       res.status(401).json({ error: 'No autenticado' });
       return;
@@ -953,7 +1051,7 @@ async function startServer() {
   app.put('/api/user/sync', (req, res) => {
     if (!verifyMutationOrigin(req, res)) return;
     const db = readPersistedState();
-    const uname = getAuthenticatedUsername(req.headers.cookie, db);
+    const uname = getAuthenticatedUsername(req.headers, db);
     if (!uname || !db.users[uname]) {
       res.status(401).json({ error: 'Sesión expirada o no iniciada' });
       return;
@@ -1101,7 +1199,7 @@ async function startServer() {
   app.post('/api/notifications/friend-read', (req, res) => {
     if (!verifyMutationOrigin(req, res)) return;
     const db = readPersistedState();
-    const uname = getAuthenticatedUsername(req.headers.cookie, db);
+    const uname = getAuthenticatedUsername(req.headers, db);
     if (!uname) {
       res.status(401).json({ error: 'No autenticado' });
       return;
@@ -1128,7 +1226,7 @@ async function startServer() {
   app.post('/api/groups', (req, res) => {
     if (!verifyMutationOrigin(req, res)) return;
     const db = readPersistedState();
-    const uname = getAuthenticatedUsername(req.headers.cookie, db);
+    const uname = getAuthenticatedUsername(req.headers, db);
     if (!uname) {
       res.status(401).json({ error: 'No autenticado' });
       return;
@@ -1154,7 +1252,7 @@ async function startServer() {
   app.post('/api/groups/:groupId/toggle', (req, res) => {
     if (!verifyMutationOrigin(req, res)) return;
     const db = readPersistedState();
-    const uname = getAuthenticatedUsername(req.headers.cookie, db);
+    const uname = getAuthenticatedUsername(req.headers, db);
     if (!uname) {
       res.status(401).json({ error: 'No autenticado' });
       return;
@@ -1413,11 +1511,19 @@ async function startServer() {
       const currentUsername = socketToUser.get(ws);
 
       if (type === 'pvp:auth') {
-        const verified = socketVerifiedUser.get(ws);
+        let verified = socketVerifiedUser.get(ws) || null;
+        if (!verified && typeof msg.token === 'string' && msg.token.trim()) {
+          const db = readPersistedState();
+          verified = verifyWsToken(msg.token.trim(), db);
+          if (verified) {
+            socketVerifiedUser.set(ws, verified);
+          }
+        }
         if (!verified) {
           ws.send(
             JSON.stringify({
               type: 'pvp:error',
+              code: 'AUTH_REQUIRED',
               message: 'Debes iniciar sesión en tu cuenta para conectarte al PvP.',
             })
           );
@@ -1692,7 +1798,16 @@ async function startServer() {
     const reqUrl = request.url || '';
     if (reqUrl.startsWith('/ws/pvp')) {
       const db = readPersistedState();
-      const verified = getAuthenticatedUsername(request.headers.cookie, db);
+      let tokenParam: string | null = null;
+      try {
+        const parsed = new URL(reqUrl, 'http://localhost');
+        tokenParam = parsed.searchParams.get('token');
+      } catch {
+        tokenParam = null;
+      }
+      const verified =
+        getAuthenticatedUsername(request.headers, db) ||
+        verifyWsToken(tokenParam, db);
       wss.handleUpgrade(request, socket, head, (ws) => {
         if (verified) {
           socketVerifiedUser.set(ws, verified);

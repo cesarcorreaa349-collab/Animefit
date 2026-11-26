@@ -244,6 +244,54 @@ export function loadDB(): AppDB {
 }
 
 let serverSyncTimer: number | null = null;
+let inMemorySessionToken: string | null = null;
+let inMemoryWsToken: { token: string; expiresAt: number } | null = null;
+let serverSessionStatus: 'unknown' | 'authenticated' | 'unauthenticated' =
+  'unknown';
+
+export function getServerSessionStatus():
+  | 'unknown'
+  | 'authenticated'
+  | 'unauthenticated' {
+  return serverSessionStatus;
+}
+
+export function setInMemoryAuthTokens(
+  sessionToken?: string | null,
+  wsToken?: string | null
+): void {
+  if (typeof sessionToken === 'string' && sessionToken.trim()) {
+    inMemorySessionToken = sessionToken.trim();
+  }
+  if (typeof wsToken === 'string' && wsToken.trim()) {
+    inMemoryWsToken = {
+      token: wsToken.trim(),
+      expiresAt: Date.now() + 8 * 60 * 1000,
+    };
+  }
+}
+
+export function getInMemoryWsToken(): string | null {
+  if (inMemoryWsToken && inMemoryWsToken.expiresAt > Date.now() + 15000) {
+    return inMemoryWsToken.token;
+  }
+  return null;
+}
+
+export function clearInMemoryAuthTokens(): void {
+  inMemorySessionToken = null;
+  inMemoryWsToken = null;
+  serverSessionStatus = 'unauthenticated';
+}
+
+function authHeaders(
+  extra: Record<string, string> = {}
+): Record<string, string> {
+  if (inMemorySessionToken) {
+    return { ...extra, Authorization: `Bearer ${inMemorySessionToken}` };
+  }
+  return extra;
+}
 
 export function pushDBToServer(db: AppDB, keepalive = false): void {
   try {
@@ -260,10 +308,10 @@ export function pushDBToServer(db: AppDB, keepalive = false): void {
     fetch(apiUrl('/api/user/sync'), {
       method: 'PUT',
       credentials: 'include',
-      headers: {
+      headers: authHeaders({
         'Content-Type': 'application/json',
         'X-Requested-With': 'animefit',
-      },
+      }),
       body: payload,
       keepalive,
     }).catch(() => {
@@ -311,6 +359,8 @@ export interface AuthSessionPayload {
   activeWorkout: ActiveWorkout | null;
   groups: CommunityGroup[];
   publicUsers: Record<string, UserProfile>;
+  sessionToken?: string;
+  wsToken?: string | null;
 }
 
 export function buildAppDBFromServerAuth(payload: AuthSessionPayload): AppDB {
@@ -349,10 +399,13 @@ export async function syncDBFromBackups(localDb: AppDB): Promise<AppDB | null> {
     const res = await fetch(apiUrl('/api/auth/me'), {
       credentials: 'include',
       cache: 'no-store',
+      headers: authHeaders(),
     });
     if (res.ok) {
       const data = (await res.json()) as AuthSessionPayload;
       if (data.user) {
+        serverSessionStatus = 'authenticated';
+        setInMemoryAuthTokens(data.sessionToken, data.wsToken);
         const nextDb = buildAppDBFromServerAuth(data);
         const localUser = effectiveLocal.users?.[data.user.username];
         if (localUser?.wellness?.logs) {
@@ -415,6 +468,9 @@ export async function syncDBFromBackups(localDb: AppDB): Promise<AppDB | null> {
         return nextDb;
       }
 
+      serverSessionStatus = 'unauthenticated';
+      inMemoryWsToken = null;
+
       // Preserve saved local/IDB session unless user explicitly logged out
       if (
         !isExplicitlyLoggedOut() &&
@@ -465,6 +521,36 @@ export async function syncDBFromBackups(localDb: AppDB): Promise<AppDB | null> {
   return null;
 }
 
+export async function apiFetchWsToken(): Promise<
+  | { ok: true; wsToken: string }
+  | { ok: false; unauthenticated: boolean }
+> {
+  try {
+    const res = await fetch(apiUrl('/api/auth/ws-token'), {
+      credentials: 'include',
+      cache: 'no-store',
+      headers: authHeaders(),
+    });
+    if (res.status === 401) {
+      inMemoryWsToken = null;
+      serverSessionStatus = 'unauthenticated';
+      return { ok: false, unauthenticated: true };
+    }
+    if (!res.ok) {
+      return { ok: false, unauthenticated: false };
+    }
+    const json = (await res.json()) as { wsToken?: string };
+    if (typeof json.wsToken === 'string' && json.wsToken.trim()) {
+      setInMemoryAuthTokens(undefined, json.wsToken);
+      serverSessionStatus = 'authenticated';
+      return { ok: true, wsToken: json.wsToken.trim() };
+    }
+    return { ok: false, unauthenticated: false };
+  } catch {
+    return { ok: false, unauthenticated: false };
+  }
+}
+
 export async function apiLogin(
   identifier: string,
   password: string
@@ -483,6 +569,8 @@ export async function apiLogin(
     if (!res.ok) {
       return { ok: false, error: json.error || 'Error al iniciar sesión.' };
     }
+    serverSessionStatus = 'authenticated';
+    setInMemoryAuthTokens(json.sessionToken, json.wsToken);
     return { ok: true, data: json };
   } catch {
     return { ok: false, error: 'Sin conexión con el servidor.' };
@@ -508,6 +596,8 @@ export async function apiRegister(
     if (!res.ok) {
       return { ok: false, error: json.error || 'Error al crear cuenta.' };
     }
+    serverSessionStatus = 'authenticated';
+    setInMemoryAuthTokens(json.sessionToken, json.wsToken);
     return { ok: true, data: json };
   } catch {
     return { ok: false, error: 'Sin conexión con el servidor.' };
@@ -515,11 +605,13 @@ export async function apiRegister(
 }
 
 export async function apiLogout(): Promise<void> {
+  const headers = authHeaders({ 'X-Requested-With': 'animefit' });
+  clearInMemoryAuthTokens();
   try {
     await fetch(apiUrl('/api/auth/logout'), {
       method: 'POST',
       credentials: 'include',
-      headers: { 'X-Requested-With': 'animefit' },
+      headers,
     });
   } catch {
     // ignore
@@ -533,19 +625,25 @@ export async function apiChangePassword(
     const res = await fetch(apiUrl('/api/auth/change-password'), {
       method: 'POST',
       credentials: 'include',
-      headers: {
+      headers: authHeaders({
         'Content-Type': 'application/json',
         'X-Requested-With': 'animefit',
-      },
+      }),
       body: JSON.stringify({ newPassword }),
     });
-    const json = (await res.json()) as { ok?: boolean; error?: string };
+    const json = (await res.json()) as {
+      ok?: boolean;
+      error?: string;
+      sessionToken?: string;
+      wsToken?: string | null;
+    };
     if (!res.ok || !json.ok) {
       return {
         ok: false,
         error: json.error || 'No se pudo cambiar la contraseña.',
       };
     }
+    setInMemoryAuthTokens(json.sessionToken, json.wsToken);
     return { ok: true };
   } catch {
     return { ok: false, error: 'Sin conexión con el servidor.' };
@@ -553,12 +651,16 @@ export async function apiChangePassword(
 }
 
 export async function apiDeleteAccount(): Promise<boolean> {
+  const headers = authHeaders({ 'X-Requested-With': 'animefit' });
   try {
     const res = await fetch(apiUrl('/api/auth/account'), {
       method: 'DELETE',
       credentials: 'include',
-      headers: { 'X-Requested-With': 'animefit' },
+      headers,
     });
+    if (res.ok) {
+      clearInMemoryAuthTokens();
+    }
     return res.ok;
   } catch {
     return false;
@@ -573,10 +675,10 @@ export async function apiCreateGroup(
     const res = await fetch(apiUrl('/api/groups'), {
       method: 'POST',
       credentials: 'include',
-      headers: {
+      headers: authHeaders({
         'Content-Type': 'application/json',
         'X-Requested-With': 'animefit',
-      },
+      }),
       body: JSON.stringify({ name, desc }),
     });
     if (!res.ok) return null;
@@ -596,7 +698,7 @@ export async function apiToggleGroup(
       {
         method: 'POST',
         credentials: 'include',
-        headers: { 'X-Requested-With': 'animefit' },
+        headers: authHeaders({ 'X-Requested-With': 'animefit' }),
       }
     );
     if (!res.ok) return null;
@@ -614,10 +716,10 @@ export async function apiMarkFriendNotificationsRead(
     await fetch(apiUrl('/api/notifications/friend-read'), {
       method: 'POST',
       credentials: 'include',
-      headers: {
+      headers: authHeaders({
         'Content-Type': 'application/json',
         'X-Requested-With': 'animefit',
-      },
+      }),
       body: JSON.stringify(ids ? { ids } : {}),
     });
   } catch {

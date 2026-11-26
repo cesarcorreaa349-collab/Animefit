@@ -151,12 +151,15 @@ export default function App() {
     []
   );
 
+  const [serverSessionEpoch, setServerSessionEpoch] = useState(0);
+
   useEffect(() => {
     let cancelled = false;
     void syncDBFromBackups(loadDB()).then((synced) => {
       if (!cancelled && synced) {
         latestDbRef.current = synced;
         setDb(synced);
+        setServerSessionEpoch((n) => n + 1);
       }
     });
     return () => {
@@ -415,6 +418,7 @@ export default function App() {
 
   const pvp = usePvpSocket({
     user: currentUser,
+    serverSessionEpoch,
     onNotify: pushToast,
     onFriendAdded: handleIncomingFriendAdded,
     onReward: handlePvpReward,
@@ -438,8 +442,64 @@ export default function App() {
     const next = buildAppDBFromServerAuth(res.data);
     setDb(next);
     persistDB(next, false);
+    setServerSessionEpoch((n) => n + 1);
     setMainTab('entrenar');
   };
+
+  const handleReconnectPvpSession = useCallback(
+    async (
+      password: string
+    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+      if (!currentUser) {
+        return { ok: false, error: 'No hay un usuario activo.' };
+      }
+      const res = await apiLogin(currentUser.username, password);
+      if (!res.ok) {
+        return { ok: false, error: res.error };
+      }
+
+      markExplicitLogout(false);
+      const serverDb = buildAppDBFromServerAuth(res.data);
+      const serverSelf = serverDb.users[currentUser.username];
+      if (serverSelf) {
+        serverDb.users[currentUser.username] = {
+          ...serverSelf,
+          xp: Math.max(serverSelf.xp || 0, currentUser.xp || 0),
+          workoutsDone: Math.max(
+            serverSelf.workoutsDone || 0,
+            currentUser.workoutsDone || 0
+          ),
+          prs:
+            Object.keys(currentUser.prs || {}).length >=
+            Object.keys(serverSelf.prs || {}).length
+              ? currentUser.prs
+              : serverSelf.prs,
+          history:
+            (currentUser.history || []).length >=
+            (serverSelf.history || []).length
+              ? currentUser.history
+              : serverSelf.history,
+          routines:
+            (currentUser.routines || []).length > 0
+              ? currentUser.routines
+              : serverSelf.routines,
+          routineFolders:
+            (currentUser.routineFolders || []).length > 0
+              ? currentUser.routineFolders
+              : serverSelf.routineFolders,
+          profileSetup: currentUser.profileSetup || serverSelf.profileSetup,
+          wellness: currentUser.wellness || serverSelf.wellness,
+        };
+      }
+      latestDbRef.current = serverDb;
+      setDb(serverDb);
+      persistDB(serverDb, true);
+      setServerSessionEpoch((n) => n + 1);
+      pushToast('⚡ ¡Sesión validada! Conectando a la Arena PvP...');
+      return { ok: true };
+    },
+    [currentUser, pushToast]
+  );
 
   const handleRegister = async (
     rawUsername: string,
@@ -469,6 +529,7 @@ export default function App() {
     const next = buildAppDBFromServerAuth(res.data);
     setDb(next);
     persistDB(next, false);
+    setServerSessionEpoch((n) => n + 1);
     setMainTab('entrenar');
     setAssignedCharId(null);
   };
@@ -1602,10 +1663,12 @@ export default function App() {
             currentUser={currentUser}
             allUsers={db.users}
             connected={pvp.connected}
+            authRequired={pvp.authRequired}
             onlineUsers={pvp.onlineUsers}
             incomingInvites={pvp.incomingInvites}
             roomCode={pvp.roomCode}
             activeMatch={pvp.activeMatch}
+            onReconnectSession={handleReconnectPvpSession}
             onAddFriendByName={handleAddFriendByName}
             onSendChallenge={pvp.sendChallenge}
             onAcceptInvite={pvp.acceptInvite}

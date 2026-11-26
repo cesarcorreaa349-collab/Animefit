@@ -22,10 +22,14 @@ interface PvpTabProps {
   currentUser: UserProfile;
   allUsers: Record<string, UserProfile>;
   connected: boolean;
+  authRequired?: boolean;
   onlineUsers: OnlinePvpUser[];
   incomingInvites: PvpInvite[];
   roomCode: string | null;
   activeMatch: PvpMatchState | null;
+  onReconnectSession?: (
+    password: string
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
   onAddFriendByName: (name: string) => void;
   onSendChallenge: (toUsername: string) => void;
   onAcceptInvite: (inviteId: string) => void;
@@ -43,10 +47,12 @@ export function PvpTab({
   currentUser,
   allUsers,
   connected,
+  authRequired = false,
   onlineUsers,
   incomingInvites,
   roomCode,
   activeMatch,
+  onReconnectSession,
   onAddFriendByName,
   onSendChallenge,
   onAcceptInvite,
@@ -63,6 +69,9 @@ export function PvpTab({
   const [friendNameInput, setFriendNameInput] = useState('');
   const [copiedCode, setCopiedCode] = useState(false);
   const [clashSecondsLeft, setClashSecondsLeft] = useState(0);
+  const [reconnectPassword, setReconnectPassword] = useState('');
+  const [reconnectBusy, setReconnectBusy] = useState(false);
+  const [reconnectError, setReconnectError] = useState('');
 
   const lv = getLevelInfo(currentUser.xp || 0);
   const st = getCharacterStage(currentUser.charId, lv.level);
@@ -421,6 +430,11 @@ export function PvpTab({
                   En línea ({onlineUsers.length})
                 </span>
               </>
+            ) : authRequired ? (
+              <>
+                <WifiOff className="w-4 h-4 text-[#FCA5A5]" />
+                <span className="text-[#FCA5A5]">Requiere validar sesión</span>
+              </>
             ) : (
               <>
                 <WifiOff className="w-4 h-4 text-[#FACC15]" />
@@ -430,6 +444,55 @@ export function PvpTab({
           </div>
         </div>
       </section>
+
+      {authRequired && !connected && onReconnectSession && (
+        <section className="rounded-2xl border border-[#FACC15]/60 bg-[#0A0B0F] p-4 sm:p-5 flex flex-col gap-3">
+          <div>
+            <h3 className="text-sm font-extrabold text-[#FACC15]">
+              Valida tu sesión en el servidor para conectarte al PvP
+            </h3>
+            <p className="text-xs text-[#8A92A2] mt-1">
+              Tu perfil local de{' '}
+              <strong className="text-[#F1F5F9]">{currentUser.username}</strong>{' '}
+              está guardado, pero el servidor PvP requiere confirmar tu contraseña (por ejemplo tras reiniciar el servidor o bloquear cookies de terceros).
+            </p>
+          </div>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!reconnectPassword.trim() || reconnectBusy) return;
+              setReconnectBusy(true);
+              setReconnectError('');
+              const res = await onReconnectSession(reconnectPassword.trim());
+              setReconnectBusy(false);
+              if (!res.ok) {
+                setReconnectError(res.error);
+              } else {
+                setReconnectPassword('');
+              }
+            }}
+            className="flex flex-col sm:flex-row gap-2"
+          >
+            <input
+              type="password"
+              value={reconnectPassword}
+              onChange={(e) => setReconnectPassword(e.target.value)}
+              placeholder={`Contraseña de ${currentUser.username}...`}
+              className="flex-1 min-h-[42px] bg-[#07080B] border border-[#1B1E26] rounded-xl px-3.5 text-xs sm:text-sm text-[#F1F5F9] focus:outline-none focus:border-[#38BDF8]"
+            />
+            <button
+              type="submit"
+              disabled={reconnectBusy || !reconnectPassword.trim()}
+              className="min-h-[42px] px-4 rounded-xl bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] text-xs font-black whitespace-nowrap disabled:opacity-50"
+            >
+              {reconnectBusy ? 'Conectando...' : 'Reconectar al PvP'}
+            </button>
+          </form>
+          {reconnectError && (
+            <p className="text-xs font-bold text-[#FCA5A5]">{reconnectError}</p>
+          )}
+        </section>
+      )}
 
       {/* Incoming PvP Invites */}
       {incomingInvites.length > 0 && (
