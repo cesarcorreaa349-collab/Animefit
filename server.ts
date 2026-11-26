@@ -211,24 +211,46 @@ function clearSessionCookie(req: express.Request, res: express.Response): void {
   );
 }
 
+function isAllowedCorsOrigin(origin: string, serverHost?: string): boolean {
+  try {
+    const parsed = new URL(origin);
+    if (serverHost && parsed.host === serverHost) return true;
+    const configured = (process.env.ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (configured.includes(origin) || configured.includes(parsed.host)) {
+      return true;
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    return (
+      hostname === 'animefit-2.onrender.com' ||
+      hostname.endsWith('.vercel.app') ||
+      hostname.endsWith('.onrender.com') ||
+      hostname.endsWith('.run.app') ||
+      hostname === 'aistudio.google.com' ||
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1'
+    );
+  } catch {
+    return false;
+  }
+}
+
 function verifyMutationOrigin(
   req: express.Request,
   res: express.Response
 ): boolean {
   const origin = req.get('origin');
   const host = req.get('x-forwarded-host') || req.get('host');
-  if (origin && host) {
-    try {
-      const originHost = new URL(origin).host;
-      if (originHost !== host) {
-        res.status(403).json({ error: 'Origen no permitido' });
-        return false;
-      }
-    } catch {
-      res.status(403).json({ error: 'Origen inválido' });
+  if (origin) {
+    if (!isAllowedCorsOrigin(origin, host)) {
+      res.status(403).json({ error: 'Origen no permitido' });
       return false;
     }
-  } else if (req.get('x-requested-with') !== 'animefit') {
+    return true;
+  }
+  if (req.get('x-requested-with') !== 'animefit') {
     res.status(403).json({ error: 'Solicitud no autorizada' });
     return false;
   }
@@ -499,8 +521,27 @@ function buildFighterState(seed: FighterSeed): PvpFighterState {
 async function startServer() {
   const app = express();
   app.set('trust proxy', 1);
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
     res.setHeader('Permissions-Policy', 'accelerometer=*, gyroscope=*');
+    const origin = req.get('origin');
+    const host = req.get('x-forwarded-host') || req.get('host');
+    if (origin && isAllowedCorsOrigin(origin, host)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader(
+        'Access-Control-Allow-Methods',
+        'GET,POST,PUT,DELETE,OPTIONS'
+      );
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, X-Requested-With, Authorization'
+      );
+    }
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
     next();
   });
   app.use(express.json({ limit: '5mb' }));

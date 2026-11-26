@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { wsUrl } from '../config/api';
 import { PvpInvite, PvpMatchState, UserProfile } from '../types/animefit';
 import { getCharacterStage, getLevelInfo } from '../utils/animefit';
 
@@ -71,8 +72,7 @@ export function usePvpSocket({ user, onNotify, onReward }: UsePvpSocketOptions) 
 
     const connect = () => {
       if (cancelled) return;
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${proto}//${window.location.host}/ws/pvp`);
+      const ws = new WebSocket(wsUrl('/ws/pvp'));
       wsRef.current = ws;
 
       ws.onopen = () => {

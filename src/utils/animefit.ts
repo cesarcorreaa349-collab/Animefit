@@ -1,3 +1,4 @@
+import { apiUrl } from '../config/api';
 import { CHARACTERS } from '../data/characters';
 import { BASE_EXERCISES, SEED_GROUPS } from '../data/exercises';
 import {
@@ -256,9 +257,9 @@ export function pushDBToServer(db: AppDB, keepalive = false): void {
       profile: sanitizedProfile,
       activeWorkout: db.activeWorkouts[uname] || null,
     });
-    fetch('/api/user/sync', {
+    fetch(apiUrl('/api/user/sync'), {
       method: 'PUT',
-      credentials: 'same-origin',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
         'X-Requested-With': 'animefit',
@@ -336,36 +337,78 @@ export function buildAppDBFromServerAuth(payload: AuthSessionPayload): AppDB {
 }
 
 export async function syncDBFromBackups(localDb: AppDB): Promise<AppDB | null> {
+  let effectiveLocal = localDb;
+  if (!effectiveLocal.sessionUser && !isExplicitlyLoggedOut()) {
+    const idbDb = await readFromIDB();
+    if (idbDb && idbDb.sessionUser && idbDb.users?.[idbDb.sessionUser]) {
+      effectiveLocal = sanitizeDB(idbDb);
+    }
+  }
+
   try {
-    const res = await fetch('/api/auth/me', {
-      credentials: 'same-origin',
+    const res = await fetch(apiUrl('/api/auth/me'), {
+      credentials: 'include',
       cache: 'no-store',
     });
     if (res.ok) {
       const data = (await res.json()) as AuthSessionPayload;
-      const nextDb = buildAppDBFromServerAuth(data);
-      // Persist only when server confirms session, or clear stale local session if logged out on server
-      if (!data.user) {
-        await clearLocalDeviceCache();
-      } else {
+      if (data.user) {
+        const nextDb = buildAppDBFromServerAuth(data);
         try {
           localStorage.setItem(DB_KEY, JSON.stringify(nextDb));
         } catch {
           // ignore
         }
         void writeToIDB(nextDb);
+        return nextDb;
       }
-      return nextDb;
+
+      // Preserve saved local/IDB session unless user explicitly logged out
+      if (
+        !isExplicitlyLoggedOut() &&
+        effectiveLocal.sessionUser &&
+        effectiveLocal.users?.[effectiveLocal.sessionUser]
+      ) {
+        const preservedUser = effectiveLocal.users[effectiveLocal.sessionUser];
+        const mergedDb = sanitizeDB({
+          users: {
+            ...(data.publicUsers || {}),
+            ...effectiveLocal.users,
+            [preservedUser.username]: preservedUser,
+          },
+          groups:
+            data.groups && data.groups.length > 0
+              ? data.groups
+              : effectiveLocal.groups,
+          sessionUser: preservedUser.username,
+          activeWorkouts: effectiveLocal.activeWorkouts || {},
+        });
+        try {
+          localStorage.setItem(DB_KEY, JSON.stringify(mergedDb));
+        } catch {
+          // ignore
+        }
+        void writeToIDB(mergedDb);
+        return mergedDb;
+      }
+
+      return null;
     }
   } catch {
-    // Offline fallback: only use this device's own IDB cache if localStorage was empty
+    // Offline fallback: keep saved device cache below
   }
 
-  if (!localDb.sessionUser && !isExplicitlyLoggedOut()) {
-    const idbDb = await readFromIDB();
-    if (idbDb && idbDb.sessionUser && idbDb.users?.[idbDb.sessionUser]) {
-      return sanitizeDB(idbDb);
+  if (
+    !isExplicitlyLoggedOut() &&
+    effectiveLocal.sessionUser &&
+    effectiveLocal.users?.[effectiveLocal.sessionUser]
+  ) {
+    try {
+      localStorage.setItem(DB_KEY, JSON.stringify(effectiveLocal));
+    } catch {
+      // ignore
     }
+    return effectiveLocal;
   }
   return null;
 }
@@ -375,9 +418,9 @@ export async function apiLogin(
   password: string
 ): Promise<{ ok: true; data: AuthSessionPayload } | { ok: false; error: string }> {
   try {
-    const res = await fetch('/api/auth/login', {
+    const res = await fetch(apiUrl('/api/auth/login'), {
       method: 'POST',
-      credentials: 'same-origin',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
         'X-Requested-With': 'animefit',
@@ -400,9 +443,9 @@ export async function apiRegister(
   password: string
 ): Promise<{ ok: true; data: AuthSessionPayload } | { ok: false; error: string }> {
   try {
-    const res = await fetch('/api/auth/register', {
+    const res = await fetch(apiUrl('/api/auth/register'), {
       method: 'POST',
-      credentials: 'same-origin',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
         'X-Requested-With': 'animefit',
@@ -421,9 +464,9 @@ export async function apiRegister(
 
 export async function apiLogout(): Promise<void> {
   try {
-    await fetch('/api/auth/logout', {
+    await fetch(apiUrl('/api/auth/logout'), {
       method: 'POST',
-      credentials: 'same-origin',
+      credentials: 'include',
       headers: { 'X-Requested-With': 'animefit' },
     });
   } catch {
@@ -435,9 +478,9 @@ export async function apiChangePassword(
   newPassword: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
-    const res = await fetch('/api/auth/change-password', {
+    const res = await fetch(apiUrl('/api/auth/change-password'), {
       method: 'POST',
-      credentials: 'same-origin',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
         'X-Requested-With': 'animefit',
@@ -459,9 +502,9 @@ export async function apiChangePassword(
 
 export async function apiDeleteAccount(): Promise<boolean> {
   try {
-    const res = await fetch('/api/auth/account', {
+    const res = await fetch(apiUrl('/api/auth/account'), {
       method: 'DELETE',
-      credentials: 'same-origin',
+      credentials: 'include',
       headers: { 'X-Requested-With': 'animefit' },
     });
     return res.ok;
@@ -475,9 +518,9 @@ export async function apiCreateGroup(
   desc: string
 ): Promise<CommunityGroup[] | null> {
   try {
-    const res = await fetch('/api/groups', {
+    const res = await fetch(apiUrl('/api/groups'), {
       method: 'POST',
-      credentials: 'same-origin',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
         'X-Requested-With': 'animefit',
@@ -496,11 +539,14 @@ export async function apiToggleGroup(
   groupId: string
 ): Promise<CommunityGroup[] | null> {
   try {
-    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/toggle`, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'X-Requested-With': 'animefit' },
-    });
+    const res = await fetch(
+      apiUrl(`/api/groups/${encodeURIComponent(groupId)}/toggle`),
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'X-Requested-With': 'animefit' },
+      }
+    );
     if (!res.ok) return null;
     const json = (await res.json()) as { groups?: CommunityGroup[] };
     return json.groups || null;
