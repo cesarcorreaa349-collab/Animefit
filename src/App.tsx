@@ -11,6 +11,10 @@ import {
 import { AuthScreen } from './components/AuthScreen';
 import { CharacterAvatar } from './components/CharacterAvatar';
 import { CharacterTab } from './components/CharacterTab';
+import {
+  LevelUpCelebration,
+  LevelUpCelebrationEvent,
+} from './components/LevelUpCelebration';
 import { Modal } from './components/Modal';
 import { OnboardingScreen } from './components/OnboardingScreen';
 import { PvpTab } from './components/PvpTab';
@@ -87,6 +91,42 @@ export default function App() {
   const tutorialDismissedRef = useRef<Set<string>>(new Set());
   const [sundaySummaryOpen, setSundaySummaryOpen] = useState(false);
   const sundayDismissedRef = useRef<Set<string>>(new Set());
+  const [levelUpEvent, setLevelUpEvent] =
+    useState<LevelUpCelebrationEvent | null>(null);
+  const levelUpTimerRef = useRef<number | null>(null);
+
+  const triggerLevelUpCelebration = useCallback(
+    (
+      newLevel: number,
+      evolved: boolean,
+      stageName: string,
+      auraColor: string
+    ) => {
+      if (levelUpTimerRef.current) {
+        window.clearTimeout(levelUpTimerRef.current);
+      }
+      setLevelUpEvent({
+        id: Date.now(),
+        newLevel,
+        evolved,
+        stageName,
+        auraColor,
+      });
+      levelUpTimerRef.current = window.setTimeout(() => {
+        setLevelUpEvent(null);
+        levelUpTimerRef.current = null;
+      }, 3400);
+    },
+    []
+  );
+
+  useEffect(() => {
+    return () => {
+      if (levelUpTimerRef.current) {
+        window.clearTimeout(levelUpTimerRef.current);
+      }
+    };
+  }, []);
 
   const pushToast = useCallback((text: string) => {
     const id = Date.now() + Math.random();
@@ -697,6 +737,15 @@ export default function App() {
         },
       };
     });
+
+    if (newLevel > prevLevel) {
+      triggerLevelUpCelebration(
+        newLevel,
+        evolved,
+        newStageObj.stageName,
+        newStageObj.char.auraColor
+      );
+    }
 
     return {
       earnedXp,
@@ -1381,6 +1430,7 @@ export default function App() {
         className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_15%_10%,rgba(14,165,233,0.03),transparent_36%),radial-gradient(circle_at_85%_80%,rgba(202,138,4,0.03),transparent_36%)]"
       />
       {toastLayer}
+      <LevelUpCelebration event={levelUpEvent} />
 
       {/* Top Navigation Bar */}
       <header className="sticky top-0 z-30 bg-[#030406]/92 backdrop-blur-md border-b border-[#1B1E26]">

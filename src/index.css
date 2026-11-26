@@ -53,8 +53,74 @@
   animation: pulseAura 2.8s ease-in-out infinite;
 }
 
+@keyframes levelupFlash {
+  0% {
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes levelupRing {
+  0% {
+    opacity: 0.95;
+    transform: scale(0.25);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(3.2);
+  }
+}
+
+@keyframes levelupBanner {
+  0% {
+    opacity: 0;
+    transform: translateY(-14px) scale(0.92);
+  }
+  14% {
+    opacity: 1;
+    transform: translateY(0) scale(1.03);
+  }
+  24% {
+    transform: translateY(0) scale(1);
+  }
+  82% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.97);
+  }
+}
+
+.levelup-flash {
+  animation: levelupFlash 0.85s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.levelup-ring {
+  animation: levelupRing 0.9s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.levelup-ring-delayed {
+  animation: levelupRing 1.05s cubic-bezier(0.16, 1, 0.3, 1) 0.12s forwards;
+  opacity: 0;
+}
+
+.levelup-banner {
+  animation: levelupBanner 2.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .aura-pulse {
+  .aura-pulse,
+  .levelup-flash,
+  .levelup-ring,
+  .levelup-ring-delayed,
+  .levelup-banner {
     animation: none;
   }
 }

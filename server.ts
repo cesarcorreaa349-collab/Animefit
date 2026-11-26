@@ -1189,6 +1189,8 @@ async function startServer() {
     res.send('[]');
   });
 
+  const server = http.createServer(app);
+
   const distDir = path.join(process.cwd(), 'dist');
   const isProdStart =
     process.env.NODE_ENV === 'production' ||
@@ -1198,7 +1200,11 @@ async function startServer() {
   if (!isProdStart) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: ['.run.app', '.onrender.com', '.vercel.app'],
+        ws: { server },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -1224,7 +1230,6 @@ async function startServer() {
     });
   }
 
-  const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true });
 
   const socketToUser = new Map<WebSocket, string>();

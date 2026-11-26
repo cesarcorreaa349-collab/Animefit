@@ -1232,8 +1232,9 @@ export function TrainTab({
                   {summaryInfo.prCount} nuevos PRs
                 </div>
                 {summaryInfo.newLevel > summaryInfo.prevLevel && (
-                  <div className="mt-3 text-sm font-extrabold text-[#38BDF8] tabular-nums">
-                    ⬆️ ¡Subiste al Nivel {summaryInfo.newLevel}!
+                  <div className="mt-3 px-3.5 py-2.5 rounded-xl bg-[#38BDF8]/12 border border-[#38BDF8]/50 text-sm font-extrabold text-[#38BDF8] tabular-nums">
+                    ⬆️ ¡Subiste de Nivel! ({summaryInfo.prevLevel} →{' '}
+                    {summaryInfo.newLevel})
                   </div>
                 )}
                 {summaryInfo.evolved && (
