@@ -1523,14 +1523,14 @@ export default function App() {
             <button
               type="button"
               onClick={() => setEditingProfileOpen(true)}
-              className="min-h-[36px] pl-1.5 pr-2.5 rounded-lg bg-[#101218] border border-[#1B1E26] hover:border-[#FACC15] flex items-center gap-2 transition-colors whitespace-nowrap"
-              title="Editar Mi usuario"
+              className="min-h-[36px] pl-1.5 pr-2.5 rounded-lg bg-[#101218] border border-[#1B1E26] hover:border-[#FACC15] flex items-center gap-2 transition-colors whitespace-nowrap max-w-[180px] sm:max-w-[240px]"
+              title={`Editar perfil de ${currentUser.username}`}
             >
               <CharacterAvatar charId={st.char.id} size="xs" />
-              <span className="text-xs font-extrabold text-[#F1F5F9]">
-                Mi usuario
+              <span className="text-xs font-extrabold text-[#F1F5F9] truncate max-w-[96px] sm:max-w-[150px]">
+                {currentUser.username}
               </span>
-              <span className="text-[11px] font-bold text-[#FACC15] tabular-nums">
+              <span className="text-[11px] font-bold text-[#FACC15] tabular-nums shrink-0">
                 Nv.{lv.level}
               </span>
             </button>
