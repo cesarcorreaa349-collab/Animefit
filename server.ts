@@ -7,7 +7,12 @@ import path from 'path';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CHARACTERS } from './src/data/characters.ts';
 import { SEED_GROUPS, SEED_USERS } from './src/data/exercises.ts';
-import type { CommunityGroup, Routine, UserProfile } from './src/types/animefit.ts';
+import type {
+  CommunityGroup,
+  FriendNotification,
+  Routine,
+  UserProfile,
+} from './src/types/animefit.ts';
 
 const PORT = Number(process.env.PORT || 3000);
 const CWD_DATA_FILE = path.join(process.cwd(), '.animefit_db.json');
@@ -44,6 +49,7 @@ interface DbUserRecord {
   prs: Record<string, number>;
   history: unknown[];
   friends: string[];
+  friendNotifications?: FriendNotification[];
   groups: string[];
   customExercises: unknown[];
   routines: Routine[];
@@ -522,6 +528,13 @@ function buildFighterState(seed: FighterSeed): PvpFighterState {
 async function startServer() {
   const app = express();
   app.set('trust proxy', 1);
+  const onlineUsers = new Map<string, OnlineEntry>();
+  const sendToUser = (username: string, payload: unknown) => {
+    const entry = onlineUsers.get(username);
+    if (entry && entry.ws.readyState === WebSocket.OPEN) {
+      entry.ws.send(JSON.stringify(payload));
+    }
+  };
   app.use((req, res, next) => {
     res.setHeader('Permissions-Policy', 'accelerometer=*, gyroscope=*');
     const origin = req.get('origin');
@@ -962,12 +975,28 @@ async function startServer() {
     };
 
     const existing = db.users[uname];
+    const newlyAddedFriendNotifs: Array<{
+      targetUsername: string;
+      notification: FriendNotification;
+    }> = [];
+
     if (payload.profile && typeof payload.profile === 'object') {
       const incoming = payload.profile;
       const sanitizedWellness = sanitizeWellnessPayload(
         incoming.wellness,
         existing.wellness
       );
+      const prevFriendSet = new Set(
+        (Array.isArray(existing.friends) ? existing.friends : []).map((f) =>
+          String(f).toLowerCase()
+        )
+      );
+      const nextFriends = Array.isArray(incoming.friends)
+        ? incoming.friends
+            .map((f) => resolveUsernameKey(db.users, String(f || '')))
+            .filter((f): f is string => Boolean(f && f !== uname))
+        : existing.friends;
+
       const merged: DbUserRecord = {
         ...existing,
         email: typeof incoming.email === 'string' ? incoming.email : existing.email,
@@ -990,7 +1019,10 @@ async function startServer() {
             ? incoming.prs
             : existing.prs,
         history: Array.isArray(incoming.history) ? incoming.history : existing.history,
-        friends: Array.isArray(incoming.friends) ? incoming.friends : existing.friends,
+        friends: nextFriends,
+        friendNotifications: Array.isArray(existing.friendNotifications)
+          ? existing.friendNotifications
+          : [],
         groups: Array.isArray(incoming.groups) ? incoming.groups : existing.groups,
         customExercises: Array.isArray(incoming.customExercises)
           ? incoming.customExercises
@@ -1016,6 +1048,32 @@ async function startServer() {
       };
       delete merged.pass;
       db.users[uname] = merged;
+
+      for (const targetUsername of nextFriends) {
+        if (prevFriendSet.has(targetUsername.toLowerCase())) continue;
+        const targetRecord = db.users[targetUsername];
+        if (!targetRecord) continue;
+        const existingNotifs = Array.isArray(targetRecord.friendNotifications)
+          ? targetRecord.friendNotifications
+          : [];
+        const hasRecentFromSender = existingNotifs.some(
+          (n) =>
+            n.fromUsername.toLowerCase() === uname.toLowerCase() &&
+            (!n.read || Date.now() - new Date(n.createdAt).getTime() < 10 * 60 * 1000)
+        );
+        if (hasRecentFromSender) continue;
+
+        const notif: FriendNotification = {
+          id: `fn_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          fromUsername: uname,
+          fromCharId: String(merged.charId || 'goku'),
+          fromLevel: getLevelFromXp(Number(merged.xp || 0)),
+          createdAt: new Date().toISOString(),
+          read: false,
+        };
+        targetRecord.friendNotifications = [notif, ...existingNotifs].slice(0, 25);
+        newlyAddedFriendNotifs.push({ targetUsername, notification: notif });
+      }
     }
 
     if ('activeWorkout' in payload) {
@@ -1027,10 +1085,43 @@ async function startServer() {
     }
 
     writePersistedState(db);
+    for (const item of newlyAddedFriendNotifs) {
+      sendToUser(item.targetUsername, {
+        type: 'social:friend_added',
+        notification: item.notification,
+      });
+    }
     res.json({
       ok: true,
       groups: db.groups,
       publicUsers: sanitizePublicUsers(db.users),
+    });
+  });
+
+  app.post('/api/notifications/friend-read', (req, res) => {
+    if (!verifyMutationOrigin(req, res)) return;
+    const db = readPersistedState();
+    const uname = getAuthenticatedUsername(req.headers.cookie, db);
+    if (!uname) {
+      res.status(401).json({ error: 'No autenticado' });
+      return;
+    }
+    const body = (req.body || {}) as { ids?: unknown };
+    const idSet = Array.isArray(body.ids)
+      ? new Set(body.ids.map((v) => String(v)))
+      : null;
+
+    const userRecord = db.users[uname];
+    const current = Array.isArray(userRecord.friendNotifications)
+      ? userRecord.friendNotifications
+      : [];
+    userRecord.friendNotifications = current.map((n) =>
+      !idSet || idSet.has(n.id) ? { ...n, read: true } : n
+    );
+    writePersistedState(db);
+    res.json({
+      ok: true,
+      friendNotifications: userRecord.friendNotifications,
     });
   });
 
@@ -1136,20 +1227,12 @@ async function startServer() {
   const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true });
 
-  const onlineUsers = new Map<string, OnlineEntry>();
   const socketToUser = new Map<WebSocket, string>();
   const socketVerifiedUser = new Map<WebSocket, string>();
   const pendingInvites = new Map<string, PendingInvite>();
   const rooms = new Map<string, PvpRoom>();
   const matches = new Map<string, PvpMatchState>();
   const clashTimers = new Map<string, NodeJS.Timeout>();
-
-  const sendToUser = (username: string, payload: unknown) => {
-    const entry = onlineUsers.get(username);
-    if (entry && entry.ws.readyState === WebSocket.OPEN) {
-      entry.ws.send(JSON.stringify(payload));
-    }
-  };
 
   const broadcastPresence = () => {
     const list = Array.from(onlineUsers.values()).map((e) => ({

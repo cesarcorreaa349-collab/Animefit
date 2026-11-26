@@ -67,7 +67,17 @@ interface TrainTabProps {
   ) => void;
   pedometerStatus: PedometerStatus;
   hasMotionEvents: boolean;
+  keepAliveEnabled: boolean;
+  wakeLockActive: boolean;
+  wakeLockSupported: boolean;
+  onToggleKeepAlive: () => void;
   onRequestPedometerPermission: () => void;
+  reminderSupported: boolean;
+  reminderPermission: NotificationPermission | 'unsupported';
+  reminderEnabled: boolean;
+  hoursSinceActivity: number | null;
+  onToggleReminder: () => void;
+  onTestReminder: () => void;
   onToast: (msg: string) => void;
   onNavigateToCharacter: () => void;
 }
@@ -114,7 +124,17 @@ export function TrainTab({
   onUpdateWellness,
   pedometerStatus,
   hasMotionEvents,
+  keepAliveEnabled,
+  wakeLockActive,
+  wakeLockSupported,
+  onToggleKeepAlive,
   onRequestPedometerPermission,
+  reminderSupported,
+  reminderPermission,
+  reminderEnabled,
+  hoursSinceActivity,
+  onToggleReminder,
+  onTestReminder,
   onToast,
   onNavigateToCharacter,
 }: TrainTabProps) {
@@ -1300,7 +1320,17 @@ export function TrainTab({
         user={user}
         pedometerStatus={pedometerStatus}
         hasMotionEvents={hasMotionEvents}
+        keepAliveEnabled={keepAliveEnabled}
+        wakeLockActive={wakeLockActive}
+        wakeLockSupported={wakeLockSupported}
+        onToggleKeepAlive={onToggleKeepAlive}
         onRequestPedometerPermission={onRequestPedometerPermission}
+        reminderSupported={reminderSupported}
+        reminderPermission={reminderPermission}
+        reminderEnabled={reminderEnabled}
+        hoursSinceActivity={hoursSinceActivity}
+        onToggleReminder={onToggleReminder}
+        onTestReminder={onTestReminder}
         onUpdateWellness={onUpdateWellness}
         onToast={onToast}
       />

@@ -2,14 +2,18 @@ import { useMemo, useRef, useState } from 'react';
 import {
   Activity,
   BarChart3,
+  Bell,
+  BellOff,
   Check,
   ExternalLink,
   Footprints,
+  Info,
   Lock,
   Minus,
   Moon,
   Plus,
   SlidersHorizontal,
+  Smartphone,
 } from 'lucide-react';
 import { PedometerStatus } from '../hooks/useAutoPedometer';
 import {
@@ -160,7 +164,17 @@ interface WellnessTrackerSectionProps {
   user: UserProfile;
   pedometerStatus: PedometerStatus;
   hasMotionEvents: boolean;
+  keepAliveEnabled: boolean;
+  wakeLockActive: boolean;
+  wakeLockSupported: boolean;
+  onToggleKeepAlive: () => void;
   onRequestPedometerPermission: () => void;
+  reminderSupported: boolean;
+  reminderPermission: NotificationPermission | 'unsupported';
+  reminderEnabled: boolean;
+  hoursSinceActivity: number | null;
+  onToggleReminder: () => void;
+  onTestReminder: () => void;
   onUpdateWellness: (
     nextWellness: DailyWellnessState,
     bonusXp?: number,
@@ -173,7 +187,17 @@ export function WellnessTrackerSection({
   user,
   pedometerStatus,
   hasMotionEvents,
+  keepAliveEnabled,
+  wakeLockActive,
+  wakeLockSupported,
+  onToggleKeepAlive,
   onRequestPedometerPermission,
+  reminderSupported,
+  reminderPermission,
+  reminderEnabled,
+  hoursSinceActivity,
+  onToggleReminder,
+  onTestReminder,
   onUpdateWellness,
   onToast,
 }: WellnessTrackerSectionProps) {
@@ -199,6 +223,8 @@ export function WellnessTrackerSection({
     useState<SleepQuality>('buena');
 
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [pedometerInfoOpen, setPedometerInfoOpen] = useState(false);
+  const [reminderModalOpen, setReminderModalOpen] = useState(false);
 
   const commitTodayUpdate = (
     patch: Partial<DailyWellnessLog>,
@@ -378,18 +404,36 @@ export function WellnessTrackerSection({
 
   return (
     <section className="flex flex-col gap-3">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <h3 className="text-base font-extrabold text-[#F1F5F9]">
           Actividad y Descanso Hoy
         </h3>
-        <button
-          type="button"
-          onClick={() => setHistoryModalOpen(true)}
-          className="min-h-[34px] px-2.5 rounded-lg bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-xs font-bold text-[#8A92A2] hover:text-[#F1F5F9] inline-flex items-center gap-1.5 whitespace-nowrap"
-        >
-          <BarChart3 className="w-3.5 h-3.5 text-[#38BDF8]" />
-          Últimos 7 días
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setReminderModalOpen(true)}
+            className={`min-h-[34px] px-2.5 rounded-lg border text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap ${
+              reminderEnabled
+                ? 'bg-[#1E40AF]/30 border-[#38BDF8]/60 text-[#F1F5F9]'
+                : 'bg-[#101218] border-[#1B1E26] hover:border-[#38BDF8] text-[#8A92A2] hover:text-[#F1F5F9]'
+            }`}
+          >
+            {reminderEnabled ? (
+              <Bell className="w-3.5 h-3.5 text-[#22C55E]" />
+            ) : (
+              <BellOff className="w-3.5 h-3.5 text-[#8A92A2]" />
+            )}
+            Recordatorio 24h
+          </button>
+          <button
+            type="button"
+            onClick={() => setHistoryModalOpen(true)}
+            className="min-h-[34px] px-2.5 rounded-lg bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-xs font-bold text-[#8A92A2] hover:text-[#F1F5F9] inline-flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <BarChart3 className="w-3.5 h-3.5 text-[#38BDF8]" />
+            Últimos 7 días
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -559,29 +603,65 @@ export function WellnessTrackerSection({
               </div>
             </div>
           ) : (
-            <div className="flex items-center justify-between gap-2 min-h-[40px] px-3 rounded-xl bg-[#07080B] border border-[#1B1E26]">
-              <div className="flex items-center gap-2 min-w-0">
-                {pedometerStatus === 'active' ? (
-                  <Activity className="w-4 h-4 text-[#22C55E] shrink-0" />
-                ) : (
-                  <Lock className="w-4 h-4 text-[#8A92A2] shrink-0" />
-                )}
-                <span className="text-[11px] font-semibold text-[#8A92A2] truncate">
-                  {pedometerStatus === 'active'
-                    ? hasMotionEvents
-                      ? 'Conteo automático por movimiento real'
-                      : 'Conteo automático listo · Camina para sumar'
-                    : 'Solo conteo automático por sensor móvil'}
-                </span>
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2 min-h-[40px] px-3 rounded-xl bg-[#07080B] border border-[#1B1E26]">
+                <div className="flex items-center gap-2 min-w-0">
+                  {pedometerStatus === 'active' ? (
+                    <Activity className="w-4 h-4 text-[#22C55E] shrink-0" />
+                  ) : (
+                    <Lock className="w-4 h-4 text-[#8A92A2] shrink-0" />
+                  )}
+                  <span className="text-[11px] font-semibold text-[#8A92A2] truncate">
+                    {pedometerStatus === 'active'
+                      ? wakeLockActive
+                        ? 'Modo caminata activo · No se suspende'
+                        : hasMotionEvents
+                        ? 'Conteo automático por movimiento real'
+                        : 'Conteo automático listo · Camina para sumar'
+                      : 'Solo conteo automático por sensor móvil'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={openStepGoalModal}
+                  className="min-h-[32px] px-2.5 rounded-lg bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] text-xs font-extrabold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                >
+                  <SlidersHorizontal className="w-3 h-3" />
+                  Meta diaria
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={openStepGoalModal}
-                className="min-h-[32px] px-2.5 rounded-lg bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] text-xs font-extrabold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
-              >
-                <SlidersHorizontal className="w-3 h-3" />
-                Meta diaria
-              </button>
+
+              {pedometerStatus === 'active' && (
+                <div className="flex items-center gap-2">
+                  {wakeLockSupported && (
+                    <button
+                      type="button"
+                      onClick={onToggleKeepAlive}
+                      className={`min-h-[36px] flex-1 px-2.5 rounded-xl border text-[11px] font-bold inline-flex items-center justify-center gap-1.5 transition-colors ${
+                        keepAliveEnabled
+                          ? 'bg-[#1E40AF]/40 border-[#38BDF8]/60 text-[#F1F5F9]'
+                          : 'bg-[#101218] border-[#1B1E26] hover:border-[#38BDF8] text-[#8A92A2] hover:text-[#F1F5F9]'
+                      }`}
+                    >
+                      <Smartphone className="w-3.5 h-3.5 text-[#38BDF8] shrink-0" />
+                      {keepAliveEnabled
+                        ? 'Modo caminata: Encendido'
+                        : 'Mantener activo al caminar'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setPedometerInfoOpen(true)}
+                    aria-label="Información sobre conteo en segundo plano"
+                    className={`min-h-[36px] px-2.5 rounded-xl bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-[11px] font-bold text-[#8A92A2] hover:text-[#F1F5F9] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                      wakeLockSupported ? 'shrink-0' : 'flex-1'
+                    }`}
+                  >
+                    <Info className="w-3.5 h-3.5 text-[#38BDF8]" />
+                    ¿Al cerrar la app?
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </article>
@@ -889,6 +969,122 @@ export function WellnessTrackerSection({
               </div>
             );
           })}
+        </div>
+      </Modal>
+
+      {/* Pedometer Background & Save Behavior Modal */}
+      <Modal
+        open={pedometerInfoOpen}
+        title="Conteo al Minimizar o Cerrar"
+        onClose={() => setPedometerInfoOpen(false)}
+        maxWidthClass="max-w-md"
+      >
+        <div className="flex flex-col gap-3 text-xs text-[#8A92A2] leading-relaxed">
+          <div className="rounded-xl bg-[#07080B] border border-[#1B1E26] p-3">
+            <strong className="text-[#F1F5F9] block mb-1">
+              Guardado automático sin perder pasos
+            </strong>
+            Cada paso detectado se guarda al instante en tu dispositivo y se sincroniza automáticamente cuando minimizás o cerrás la app.
+          </div>
+          <div className="rounded-xl bg-[#07080B] border border-[#1B1E26] p-3">
+            <strong className="text-[#F1F5F9] block mb-1">
+              Limitación del navegador al cerrar la app
+            </strong>
+            Por seguridad del sistema en Android e iOS, ningún navegador ni app web (PWA) puede leer el acelerómetro cuando cerrás la app por completo. Para seguir contando en una caminata, activá <strong className="text-[#38BDF8]">Mantener activo al caminar</strong> y dejá la app abierta sin cerrarla.
+          </div>
+          <button
+            type="button"
+            onClick={() => setPedometerInfoOpen(false)}
+            className="min-h-[42px] w-full rounded-xl bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] text-sm font-extrabold"
+          >
+            Entendido
+          </button>
+        </div>
+      </Modal>
+
+      {/* 24h Inactivity Reminder Modal */}
+      <Modal
+        open={reminderModalOpen}
+        title="Recordatorio de Entrenamiento (24h)"
+        onClose={() => setReminderModalOpen(false)}
+        maxWidthClass="max-w-md"
+      >
+        <div className="flex flex-col gap-3.5 text-xs text-[#8A92A2] leading-relaxed">
+          <div className="rounded-xl bg-[#07080B] border border-[#1B1E26] p-3">
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <strong className="text-[#F1F5F9]">Estado de notificaciones PWA</strong>
+              <span
+                className={`font-bold ${
+                  !reminderSupported
+                    ? 'text-[#8A92A2]'
+                    : reminderPermission === 'denied'
+                    ? 'text-[#F59E0B]'
+                    : reminderEnabled
+                    ? 'text-[#22C55E]'
+                    : 'text-[#8A92A2]'
+                }`}
+              >
+                {!reminderSupported
+                  ? 'No compatible'
+                  : reminderPermission === 'denied'
+                  ? 'Bloqueadas'
+                  : reminderEnabled
+                  ? 'Activadas'
+                  : 'Desactivadas'}
+              </span>
+            </div>
+            Si pasan <strong className="text-[#F1F5F9]">24 horas</strong> sin registrar un entrenamiento, pasos o sueño, el Service Worker enviará una notificación local para recordarte entrenar.
+            {hoursSinceActivity !== null && (
+              <div className="mt-2 pt-2 border-t border-[#1B1E26] tabular-nums">
+                Última actividad:{' '}
+                <strong className="text-[#38BDF8]">
+                  {hoursSinceActivity === 0
+                    ? 'hace menos de 1 hora'
+                    : `hace ${hoursSinceActivity} h`}
+                </strong>
+              </div>
+            )}
+          </div>
+
+          {reminderPermission === 'denied' && (
+            <div className="rounded-xl bg-[#F59E0B]/10 border border-[#F59E0B]/30 p-3 text-[#FACC15]">
+              Las notificaciones están bloqueadas en tu navegador. Toca el candado o ajustes del sitio y selecciona Permitir notificaciones.
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={!reminderSupported}
+              onClick={onToggleReminder}
+              className={`min-h-[42px] flex-1 px-4 rounded-xl text-xs font-extrabold inline-flex items-center justify-center gap-1.5 disabled:opacity-50 ${
+                reminderEnabled
+                  ? 'bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-[#F1F5F9]'
+                  : 'bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9]'
+              }`}
+            >
+              {reminderEnabled ? (
+                <>
+                  <BellOff className="w-4 h-4 text-[#8A92A2]" />
+                  Desactivar recordatorio
+                </>
+              ) : (
+                <>
+                  <Bell className="w-4 h-4" />
+                  Activar recordatorio 24h
+                </>
+              )}
+            </button>
+            {reminderSupported && reminderPermission !== 'denied' && (
+              <button
+                type="button"
+                onClick={onTestReminder}
+                className="min-h-[42px] px-4 rounded-xl bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-xs font-bold text-[#38BDF8]"
+              >
+                Probar aviso
+              </button>
+            )}
+          </div>
         </div>
       </Modal>
     </section>

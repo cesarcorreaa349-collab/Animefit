@@ -17,12 +17,17 @@ import { PvpTab } from './components/PvpTab';
 import { RankingTab } from './components/RankingTab';
 import { StoryTab } from './components/StoryTab';
 import { TrainTab } from './components/TrainTab';
+import {
+  WeeklySundaySummaryModal,
+  formatLocalDateKey,
+} from './components/WeeklySundaySummary';
 import { WelcomeTutorialModal } from './components/WelcomeTutorialModal';
 import {
   applyDetectedStepsToWellness,
   getLocalDateKey,
 } from './components/WellnessTrackerSection';
 import { useAutoPedometer } from './hooks/useAutoPedometer';
+import { useInactivityNotifications } from './hooks/useInactivityNotifications';
 import { usePvpSocket } from './hooks/usePvpSocket';
 import {
   ActiveWorkout,
@@ -30,6 +35,7 @@ import {
   AthleteProfileSetup,
   DailyWellnessState,
   ExerciseDef,
+  FriendNotification,
   MainTab,
   Routine,
   RoutineFolder,
@@ -44,6 +50,7 @@ import {
   apiDeleteAccount,
   apiLogin,
   apiLogout,
+  apiMarkFriendNotificationsRead,
   apiRegister,
   apiToggleGroup,
   assignCharacterBySex,
@@ -78,6 +85,8 @@ export default function App() {
   const [editingProfileOpen, setEditingProfileOpen] = useState(false);
   const [tutorialOpen, setTutorialOpen] = useState(false);
   const tutorialDismissedRef = useRef<Set<string>>(new Set());
+  const [sundaySummaryOpen, setSundaySummaryOpen] = useState(false);
+  const sundayDismissedRef = useRef<Set<string>>(new Set());
 
   const pushToast = useCallback((text: string) => {
     const id = Date.now() + Math.random();
@@ -87,10 +96,14 @@ export default function App() {
     }, 3100);
   }, []);
 
+  const latestDbRef = useRef(db);
+  latestDbRef.current = db;
+
   const updateDb = useCallback(
     (updater: (prev: AppDB) => AppDB, immediateServer = false) => {
       setDb((prev) => {
         const next = updater(prev);
+        latestDbRef.current = next;
         persistDB(next, immediateServer);
         return next;
       });
@@ -102,6 +115,7 @@ export default function App() {
     let cancelled = false;
     void syncDBFromBackups(loadDB()).then((synced) => {
       if (!cancelled && synced) {
+        latestDbRef.current = synced;
         setDb(synced);
       }
     });
@@ -112,9 +126,10 @@ export default function App() {
 
   useEffect(() => {
     const flush = () => {
-      if (!db.sessionUser) return;
-      persistDB(db, false);
-      pushDBToServer(db, true);
+      const snapshot = latestDbRef.current;
+      if (!snapshot.sessionUser) return;
+      persistDB(snapshot, false);
+      pushDBToServer(snapshot, true);
     };
     const handleVisibility = () => {
       if (document.visibilityState === 'hidden') flush();
@@ -127,7 +142,7 @@ export default function App() {
       window.removeEventListener('pagehide', flush);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [db]);
+  }, []);
 
   const resolvedSession = resolveUsername(db.users, db.sessionUser);
   const currentUser: UserProfile | null = resolvedSession
@@ -175,6 +190,58 @@ export default function App() {
     }
   }, [currentUser, editingProfileOpen, assignedCharId, activeWorkout]);
 
+  const closeSundaySummary = useCallback(() => {
+    setSundaySummaryOpen(false);
+    if (!currentUser) return;
+    const todayKey = formatLocalDateKey(new Date());
+    const seenKey = `${currentUser.username.toLowerCase()}_${todayKey}`;
+    sundayDismissedRef.current.add(seenKey);
+    try {
+      window.localStorage.setItem(
+        `animefit_sunday_summary_seen_v1_${seenKey}`,
+        '1'
+      );
+    } catch {
+      // Ignore storage errors
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    const now = new Date();
+    if (now.getDay() !== 0) return;
+    if (
+      !currentUser ||
+      !currentUser.profileSetup ||
+      editingProfileOpen ||
+      assignedCharId !== null ||
+      activeWorkout ||
+      tutorialOpen
+    ) {
+      return;
+    }
+    const todayKey = formatLocalDateKey(now);
+    const seenKey = `${currentUser.username.toLowerCase()}_${todayKey}`;
+    if (sundayDismissedRef.current.has(seenKey)) return;
+    let seen = false;
+    try {
+      seen =
+        window.localStorage.getItem(
+          `animefit_sunday_summary_seen_v1_${seenKey}`
+        ) === '1';
+    } catch {
+      seen = false;
+    }
+    if (!seen) {
+      setSundaySummaryOpen(true);
+    }
+  }, [
+    currentUser,
+    editingProfileOpen,
+    assignedCharId,
+    activeWorkout,
+    tutorialOpen,
+  ]);
+
   const handlePvpReward = useCallback(
     (payload: {
       xpEarned: number;
@@ -218,9 +285,98 @@ export default function App() {
     [currentUser, pushToast, updateDb]
   );
 
+  const toastedFriendNotifIdsRef = useRef<Set<string>>(new Set());
+
+  const showFriendSystemNotification = useCallback(
+    async (notif: FriendNotification) => {
+      if (typeof window === 'undefined' || !('Notification' in window)) return;
+      if (Notification.permission !== 'granted') return;
+      const title = '🤝 ¡Nuevo amigo en AnimeFit!';
+      const body = `${notif.fromUsername} (Nv.${notif.fromLevel}) te agregó como amigo.`;
+      if ('serviceWorker' in navigator) {
+        try {
+          const reg = await Promise.race<ServiceWorkerRegistration | null>([
+            navigator.serviceWorker.ready,
+            new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 1200)),
+          ]);
+          if (reg && typeof reg.showNotification === 'function') {
+            await reg.showNotification(title, {
+              body,
+              icon: '/pwa-192x192.png',
+              badge: '/pwa-192x192.png',
+              tag: `animefit-friend-${notif.id}`,
+              data: { url: '/' },
+            });
+            return;
+          }
+        } catch {
+          // fallback below
+        }
+      }
+      try {
+        new Notification(title, { body, icon: '/pwa-192x192.png' });
+      } catch {
+        // ignore in browsers disallowing window Notification constructor
+      }
+    },
+    []
+  );
+
+  const handleIncomingFriendAdded = useCallback(
+    (notif: FriendNotification) => {
+      if (!currentUser) return;
+      const username = currentUser.username;
+      updateDb((prev) => {
+        const u = prev.users[username];
+        if (!u) return prev;
+        const existing = u.friendNotifications || [];
+        if (existing.some((n) => n.id === notif.id)) return prev;
+        return {
+          ...prev,
+          users: {
+            ...prev.users,
+            [username]: {
+              ...u,
+              friendNotifications: [notif, ...existing].slice(0, 25),
+            },
+          },
+        };
+      }, false);
+
+      if (!toastedFriendNotifIdsRef.current.has(notif.id)) {
+        toastedFriendNotifIdsRef.current.add(notif.id);
+        pushToast(
+          `🤝 ¡${notif.fromUsername} (Nv.${notif.fromLevel}) te agregó como amigo!`
+        );
+        void showFriendSystemNotification(notif);
+      }
+    },
+    [currentUser, pushToast, showFriendSystemNotification, updateDb]
+  );
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const unread = (currentUser.friendNotifications || []).filter(
+      (n) => !n.read && !toastedFriendNotifIdsRef.current.has(n.id)
+    );
+    if (unread.length === 0) return;
+    unread.forEach((n) => toastedFriendNotifIdsRef.current.add(n.id));
+    if (unread.length === 1) {
+      pushToast(
+        `🤝 ¡${unread[0].fromUsername} (Nv.${unread[0].fromLevel}) te agregó como amigo!`
+      );
+      void showFriendSystemNotification(unread[0]);
+    } else {
+      pushToast(
+        `🤝 Tienes ${unread.length} notificaciones de nuevos amigos en Ranking.`
+      );
+    }
+  }, [currentUser, pushToast, showFriendSystemNotification]);
+
   const pvp = usePvpSocket({
     user: currentUser,
     onNotify: pushToast,
+    onFriendAdded: handleIncomingFriendAdded,
     onReward: handlePvpReward,
   });
 
@@ -800,13 +956,36 @@ export default function App() {
           [currentUser.username]: { ...u, friends: nextFriends },
         },
       };
-    });
+    }, true);
     pushToast(
       exists
         ? `Eliminaste a ${targetUsername} de tus amigos.`
         : `🤝 ¡${targetUsername} agregado como amigo!`
     );
   };
+
+  const handleMarkFriendNotificationsRead = useCallback(
+    (ids?: string[]) => {
+      if (!currentUser) return;
+      const idSet = ids ? new Set(ids) : null;
+      updateDb((prev) => {
+        const u = prev.users[currentUser.username];
+        if (!u) return prev;
+        const nextNotifs = (u.friendNotifications || []).map((n) =>
+          !idSet || idSet.has(n.id) ? { ...n, read: true } : n
+        );
+        return {
+          ...prev,
+          users: {
+            ...prev.users,
+            [currentUser.username]: { ...u, friendNotifications: nextNotifs },
+          },
+        };
+      }, false);
+      void apiMarkFriendNotificationsRead(ids);
+    },
+    [currentUser, updateDb]
+  );
 
   const handleAddFriendByName = (rawName: string) => {
     if (!currentUser) return;
@@ -1045,10 +1224,20 @@ export default function App() {
   const {
     pedometerStatus,
     hasMotionEvents,
+    keepAliveEnabled,
+    wakeLockActive,
+    wakeLockSupported,
+    toggleKeepAlive,
     requestPedometerPermission,
   } = useAutoPedometer({
     enabled: Boolean(currentUser && currentUser.profileSetup),
     onStepsDetected: handleDetectedSteps,
+    onNotify: pushToast,
+  });
+
+  const inactivityReminder = useInactivityNotifications({
+    user: currentUser && currentUser.profileSetup ? currentUser : null,
+    activeWorkout,
     onNotify: pushToast,
   });
 
@@ -1251,13 +1440,23 @@ export default function App() {
             <button
               type="button"
               onClick={() => setMainTab('ranking')}
-              className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors ${
+              className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors inline-flex items-center gap-1.5 ${
                 mainTab === 'ranking'
                   ? 'text-[#FACC15] border-[#FACC15]'
                   : 'text-[#8A92A2] border-transparent hover:text-[#F1F5F9]'
               }`}
             >
-              Ranking
+              <span>Ranking</span>
+              {(currentUser.friendNotifications || []).some((n) => !n.read) && (
+                <span className="text-[11px] font-black text-[#38BDF8] tabular-nums">
+                  (
+                  {
+                    (currentUser.friendNotifications || []).filter((n) => !n.read)
+                      .length
+                  }
+                  )
+                </span>
+              )}
             </button>
           </nav>
 
@@ -1322,7 +1521,17 @@ export default function App() {
             onUpdateWellness={handleUpdateWellness}
             pedometerStatus={pedometerStatus}
             hasMotionEvents={hasMotionEvents}
+            keepAliveEnabled={keepAliveEnabled}
+            wakeLockActive={wakeLockActive}
+            wakeLockSupported={wakeLockSupported}
+            onToggleKeepAlive={toggleKeepAlive}
             onRequestPedometerPermission={requestPedometerPermission}
+            reminderSupported={inactivityReminder.supported}
+            reminderPermission={inactivityReminder.permission}
+            reminderEnabled={inactivityReminder.enabled}
+            hoursSinceActivity={inactivityReminder.hoursSinceActivity}
+            onToggleReminder={inactivityReminder.toggleNotifications}
+            onTestReminder={inactivityReminder.sendTestNotification}
             onToast={pushToast}
             onNavigateToCharacter={() => setMainTab('personaje')}
           />
@@ -1367,6 +1576,12 @@ export default function App() {
             onDeleteAccount={handleDeleteAccount}
             onChangePassword={handleChangePassword}
             onEditProfile={() => setEditingProfileOpen(true)}
+            reminderSupported={inactivityReminder.supported}
+            reminderPermission={inactivityReminder.permission}
+            reminderEnabled={inactivityReminder.enabled}
+            hoursSinceActivity={inactivityReminder.hoursSinceActivity}
+            onToggleReminder={inactivityReminder.toggleNotifications}
+            onTestReminder={inactivityReminder.sendTestNotification}
           />
         )}
 
@@ -1384,6 +1599,7 @@ export default function App() {
               setMainTab('pvp');
               pvp.sendChallenge(username);
             }}
+            onMarkFriendNotificationsRead={handleMarkFriendNotificationsRead}
           />
         )}
       </main>
@@ -1448,7 +1664,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => setMainTab('ranking')}
-            className={`flex flex-col items-center justify-center gap-1 text-[10px] font-bold border-t-2 transition-colors ${
+            className={`relative flex flex-col items-center justify-center gap-1 text-[10px] font-bold border-t-2 transition-colors ${
               mainTab === 'ranking'
                 ? 'text-[#FACC15] border-[#FACC15] bg-[#FACC15]/5'
                 : 'text-[#8A92A2] border-transparent'
@@ -1456,6 +1672,11 @@ export default function App() {
           >
             <Trophy className="w-5 h-5" />
             <span>Ranking</span>
+            {(currentUser.friendNotifications || []).some((n) => !n.read) && (
+              <span className="absolute top-1.5 right-3 text-[10px] font-black text-[#38BDF8] tabular-nums">
+                {(currentUser.friendNotifications || []).filter((n) => !n.read).length}
+              </span>
+            )}
           </button>
         </div>
       </nav>
@@ -1528,6 +1749,13 @@ export default function App() {
         open={tutorialOpen}
         username={currentUser.username}
         onClose={closeWelcomeTutorial}
+      />
+
+      {/* Automatic Sunday Weekly Summary Modal */}
+      <WeeklySundaySummaryModal
+        open={sundaySummaryOpen}
+        user={currentUser}
+        onClose={closeSundaySummary}
       />
 
       {/* Logout confirmation modal */}

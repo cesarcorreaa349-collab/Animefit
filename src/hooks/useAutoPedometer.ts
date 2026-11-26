@@ -52,6 +52,17 @@ function hasAnyMotionSensorApi(): boolean {
   return 'DeviceMotionEvent' in window || 'Accelerometer' in window;
 }
 
+const KEEP_ALIVE_PREF_KEY = 'animefit_pedometer_keepalive_v1';
+
+function readKeepAlivePref(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(KEEP_ALIVE_PREF_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 export function useAutoPedometer({
   enabled,
   onStepsDetected,
@@ -76,6 +87,17 @@ export function useAutoPedometer({
   });
 
   const [hasMotionEvents, setHasMotionEvents] = useState(false);
+  const [keepAliveEnabled, setKeepAliveEnabled] = useState<boolean>(() =>
+    readKeepAlivePref()
+  );
+  const [wakeLockActive, setWakeLockActive] = useState(false);
+  const [resumeTick, setResumeTick] = useState(0);
+
+  const wakeLockSupported =
+    typeof navigator !== 'undefined' &&
+    'wakeLock' in navigator &&
+    typeof navigator.wakeLock?.request === 'function';
+
   const onStepsRef = useRef(onStepsDetected);
   onStepsRef.current = onStepsDetected;
 
@@ -241,6 +263,96 @@ export function useAutoPedometer({
     onNotify?.('Podómetro automático activado.');
   }, [onNotify]);
 
+  const toggleKeepAlive = useCallback(() => {
+    setKeepAliveEnabled((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(KEEP_ALIVE_PREF_KEY, next ? '1' : '0');
+      } catch {
+        // ignore storage errors
+      }
+      onNotify?.(
+        next
+          ? 'Modo Caminata activo: la pantalla se mantendrá despierta para no pausar el sensor.'
+          : 'Modo Caminata desactivado.'
+      );
+      return next;
+    });
+  }, [onNotify]);
+
+  // Manage Screen Wake Lock during active walking mode and re-acquire when returning to foreground
+  useEffect(() => {
+    if (!enabled || status !== 'active' || !keepAliveEnabled) {
+      setWakeLockActive(false);
+      return;
+    }
+    if (
+      typeof navigator === 'undefined' ||
+      !('wakeLock' in navigator) ||
+      typeof navigator.wakeLock?.request !== 'function'
+    ) {
+      setWakeLockActive(false);
+      return;
+    }
+
+    let cancelled = false;
+    let sentinel: WakeLockSentinel | null = null;
+
+    const acquire = async () => {
+      if (cancelled || document.visibilityState !== 'visible') return;
+      try {
+        const lock = await navigator.wakeLock.request('screen');
+        if (cancelled) {
+          void lock.release().catch(() => {});
+          return;
+        }
+        sentinel = lock;
+        setWakeLockActive(true);
+        lock.addEventListener('release', () => {
+          if (!cancelled) setWakeLockActive(false);
+        });
+      } catch {
+        if (!cancelled) setWakeLockActive(false);
+      }
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void acquire();
+      }
+    };
+
+    void acquire();
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('pageshow', handleVisibility);
+
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('pageshow', handleVisibility);
+      if (sentinel && !sentinel.released) {
+        void sentinel.release().catch(() => {});
+      }
+      setWakeLockActive(false);
+    };
+  }, [enabled, status, keepAliveEnabled]);
+
+  // Trigger clean sensor re-bind when returning from background/sleep
+  useEffect(() => {
+    if (!enabled || status !== 'active') return;
+    const handleResume = () => {
+      if (document.visibilityState === 'visible') {
+        setResumeTick((t) => t + 1);
+      }
+    };
+    document.addEventListener('visibilitychange', handleResume);
+    window.addEventListener('pageshow', handleResume);
+    return () => {
+      document.removeEventListener('visibilitychange', handleResume);
+      window.removeEventListener('pageshow', handleResume);
+    };
+  }, [enabled, status]);
+
   useEffect(() => {
     if (!enabled || status !== 'active') return;
 
@@ -275,7 +387,7 @@ export function useAutoPedometer({
       if (flushTimer !== null) {
         window.clearTimeout(flushTimer);
       }
-      flushTimer = window.setTimeout(flush, 1800);
+      flushTimer = window.setTimeout(flush, 1500);
     };
 
     const processAccelerationSample = (x: number, y: number, z: number) => {
@@ -342,6 +454,10 @@ export function useAutoPedometer({
       }
     };
 
+    const handleUnload = () => {
+      flush();
+    };
+
     if ('DeviceMotionEvent' in window) {
       window.addEventListener('devicemotion', handleMotion);
     }
@@ -386,6 +502,8 @@ export function useAutoPedometer({
     }
 
     document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('pagehide', handleUnload);
+    window.addEventListener('beforeunload', handleUnload);
 
     return () => {
       if (sensorStartTimer !== null) {
@@ -402,13 +520,19 @@ export function useAutoPedometer({
         }
       }
       document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('pagehide', handleUnload);
+      window.removeEventListener('beforeunload', handleUnload);
       flush();
     };
-  }, [enabled, status]);
+  }, [enabled, status, resumeTick]);
 
   return {
     pedometerStatus: status,
     hasMotionEvents,
+    keepAliveEnabled,
+    wakeLockActive,
+    wakeLockSupported,
+    toggleKeepAlive,
     requestPedometerPermission: requestPermission,
   };
 }

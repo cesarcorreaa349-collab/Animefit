@@ -11,6 +11,9 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
       VitePWA({
+        strategies: 'injectManifest',
+        srcDir: 'src',
+        filename: 'sw.ts',
         registerType: 'autoUpdate',
         includeAssets: ['icon.svg', 'apple-touch-icon.png'],
         manifest: {
@@ -47,44 +50,9 @@ export default defineConfig(() => {
             },
           ],
         },
-        workbox: {
-          skipWaiting: true,
-          clientsClaim: true,
-          cleanupOutdatedCaches: true,
-          navigateFallbackDenylist: [/^\/api\//, /^\/\.well-known\//],
+        injectManifest: {
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
-          runtimeCaching: [
-            {
-              urlPattern: ({url}) =>
-                url.pathname.startsWith('/api/') ||
-                url.pathname.startsWith('/.well-known/'),
-              handler: 'NetworkOnly',
-            },
-            {
-              urlPattern: /^https:\/\/fonts\.(googleapis|gstatic)\.com\/.*/i,
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'google-fonts-cache',
-                expiration: {
-                  maxEntries: 12,
-                  maxAgeSeconds: 60 * 60 * 24 * 365,
-                },
-                cacheableResponse: {statuses: [0, 200]},
-              },
-            },
-            {
-              urlPattern: /^https:\/\/s4\.anilist\.co\/.*/i,
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'anime-portraits-cache',
-                expiration: {
-                  maxEntries: 160,
-                  maxAgeSeconds: 60 * 60 * 24 * 30,
-                },
-                cacheableResponse: {statuses: [0, 200]},
-              },
-            },
-          ],
         },
         devOptions: {
           enabled: true,

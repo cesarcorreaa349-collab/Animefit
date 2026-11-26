@@ -354,6 +354,58 @@ export async function syncDBFromBackups(localDb: AppDB): Promise<AppDB | null> {
       const data = (await res.json()) as AuthSessionPayload;
       if (data.user) {
         const nextDb = buildAppDBFromServerAuth(data);
+        const localUser = effectiveLocal.users?.[data.user.username];
+        if (localUser?.wellness?.logs) {
+          const now = new Date();
+          const todayKey = `${now.getFullYear()}-${String(
+            now.getMonth() + 1
+          ).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+          const localToday = localUser.wellness.logs[todayKey];
+          const serverUser = nextDb.users[data.user.username];
+          const serverToday = serverUser?.wellness?.logs?.[todayKey];
+          const localSteps = Math.max(
+            0,
+            Math.min(60000, Math.round(Number(localToday?.steps) || 0))
+          );
+          const serverSteps = Math.max(
+            0,
+            Math.min(60000, Math.round(Number(serverToday?.steps) || 0))
+          );
+          if (serverUser && localToday && localSteps > serverSteps) {
+            const baseLogs = serverUser.wellness?.logs || {};
+            const baseStepGoal = Math.max(
+              3000,
+              Math.round(
+                serverUser.wellness?.stepGoal || localToday.stepGoal || 8000
+              )
+            );
+            const bonusNeeded =
+              !serverToday?.stepsXpAwarded &&
+              Boolean(localToday.stepsXpAwarded) &&
+              localSteps >= baseStepGoal;
+            nextDb.users[data.user.username] = {
+              ...serverUser,
+              xp: (serverUser.xp || 0) + (bonusNeeded ? 20 : 0),
+              wellness: {
+                stepGoal: baseStepGoal,
+                sleepGoal: serverUser.wellness?.sleepGoal || 8,
+                logs: {
+                  ...baseLogs,
+                  [todayKey]: {
+                    ...(serverToday || localToday),
+                    date: todayKey,
+                    steps: localSteps,
+                    stepGoal: baseStepGoal,
+                    stepsXpAwarded:
+                      Boolean(serverToday?.stepsXpAwarded) ||
+                      Boolean(localToday.stepsXpAwarded),
+                  },
+                },
+              },
+            };
+            pushDBToServer(nextDb, false);
+          }
+        }
         try {
           localStorage.setItem(DB_KEY, JSON.stringify(nextDb));
         } catch {
@@ -552,6 +604,24 @@ export async function apiToggleGroup(
     return json.groups || null;
   } catch {
     return null;
+  }
+}
+
+export async function apiMarkFriendNotificationsRead(
+  ids?: string[]
+): Promise<void> {
+  try {
+    await fetch(apiUrl('/api/notifications/friend-read'), {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'animefit',
+      },
+      body: JSON.stringify(ids ? { ids } : {}),
+    });
+  } catch {
+    // offline fallback: local state already marks notifications read
   }
 }
 

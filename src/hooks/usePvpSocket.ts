@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { wsUrl } from '../config/api';
-import { PvpInvite, PvpMatchState, UserProfile } from '../types/animefit';
+import {
+  FriendNotification,
+  PvpInvite,
+  PvpMatchState,
+  UserProfile,
+} from '../types/animefit';
 import { getCharacterStage, getLevelInfo } from '../utils/animefit';
 
 export interface OnlinePvpUser {
@@ -13,6 +18,7 @@ export interface OnlinePvpUser {
 interface UsePvpSocketOptions {
   user: UserProfile | null;
   onNotify: (msg: string) => void;
+  onFriendAdded?: (notification: FriendNotification) => void;
   onReward: (payload: {
     xpEarned: number;
     won: boolean;
@@ -22,14 +28,21 @@ interface UsePvpSocketOptions {
   }) => void;
 }
 
-export function usePvpSocket({ user, onNotify, onReward }: UsePvpSocketOptions) {
+export function usePvpSocket({
+  user,
+  onNotify,
+  onFriendAdded,
+  onReward,
+}: UsePvpSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const onNotifyRef = useRef(onNotify);
+  const onFriendAddedRef = useRef(onFriendAdded);
   const onRewardRef = useRef(onReward);
   const userRef = useRef(user);
 
   onNotifyRef.current = onNotify;
+  onFriendAddedRef.current = onFriendAdded;
   onRewardRef.current = onReward;
   userRef.current = user;
 
@@ -133,6 +146,11 @@ export function usePvpSocket({ user, onNotify, onReward }: UsePvpSocketOptions) 
             pvpLosses:
               typeof msg.pvpLosses === 'number' ? msg.pvpLosses : undefined,
           });
+        } else if (type === 'social:friend_added') {
+          const notification = msg.notification as FriendNotification | undefined;
+          if (notification && notification.fromUsername) {
+            onFriendAddedRef.current?.(notification);
+          }
         } else if (type === 'pvp:error') {
           onNotifyRef.current(String(msg.message || 'Error en PvP.'));
         }

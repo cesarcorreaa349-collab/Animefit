@@ -195,6 +195,15 @@ export interface DailyWellnessState {
   logs: Record<string, DailyWellnessLog>;
 }
 
+export interface FriendNotification {
+  id: string;
+  fromUsername: string;
+  fromCharId: string;
+  fromLevel: number;
+  createdAt: string;
+  read: boolean;
+}
+
 export interface UserProfile {
   username: string;
   email: string;
@@ -205,6 +214,7 @@ export interface UserProfile {
   prs: Record<string, number>;
   history: WorkoutHistoryEntry[];
   friends: string[];
+  friendNotifications?: FriendNotification[];
   groups: string[];
   customExercises: ExerciseDef[];
   routines: Routine[];

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { Bell, Check, UserPlus } from 'lucide-react';
 import {
   CommunityGroup,
   RankingSubTab,
@@ -23,6 +24,7 @@ interface RankingTabProps {
   onToggleGroup: (groupId: string) => void;
   onCreateGroup: (name: string, desc: string) => void;
   onChallengeFriend?: (username: string) => void;
+  onMarkFriendNotificationsRead?: (ids?: string[]) => void;
 }
 
 export function RankingTab({
@@ -35,6 +37,7 @@ export function RankingTab({
   onToggleGroup,
   onCreateGroup,
   onChallengeFriend,
+  onMarkFriendNotificationsRead,
 }: RankingTabProps) {
   const [subTab, setSubTab] = useState<RankingSubTab>('global');
   const [friendInput, setFriendInput] = useState('');
@@ -58,6 +61,14 @@ export function RankingTab({
   }, [allUsers]);
 
   const friends = currentUser.friends || [];
+  const friendNotifications = useMemo(
+    () =>
+      (currentUser.friendNotifications || []).filter(
+        (n) => !n.read && n.fromUsername !== currentUser.username
+      ),
+    [currentUser.friendNotifications, currentUser.username]
+  );
+
   const otherUsers = useMemo(
     () =>
       Object.values(allUsers).filter(
@@ -68,6 +79,97 @@ export function RankingTab({
 
   return (
     <div className="flex flex-col gap-5">
+      {friendNotifications.length > 0 && (
+        <section className="bg-[#0A0B0F] border border-[#38BDF8]/50 rounded-2xl p-4 flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-8 h-8 rounded-lg bg-[#101218] border border-[#1B1E26] flex items-center justify-center text-[#38BDF8] shrink-0">
+                <Bell className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-sm font-extrabold text-[#F1F5F9]">
+                  Nuevos amigos ({friendNotifications.length})
+                </h2>
+                <p className="text-xs text-[#8A92A2]">
+                  Guerreros que te agregaron recientemente
+                </p>
+              </div>
+            </div>
+            {onMarkFriendNotificationsRead && (
+              <button
+                type="button"
+                onClick={() => onMarkFriendNotificationsRead()}
+                className="min-h-[36px] px-3 rounded-lg bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-xs font-bold text-[#8A92A2] hover:text-[#F1F5F9] inline-flex items-center gap-1.5 whitespace-nowrap"
+              >
+                <Check className="w-3.5 h-3.5 text-[#22C55E]" />
+                Marcar vistas
+              </button>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            {friendNotifications.map((notif) => {
+              const senderUser = allUsers[notif.fromUsername];
+              const charId = senderUser?.charId || notif.fromCharId || 'goku';
+              const level = senderUser
+                ? getLevelInfo(senderUser.xp || 0).level
+                : notif.fromLevel || 1;
+              const alreadyFriend = friends.includes(notif.fromUsername);
+              const dateLabel = new Date(notif.createdAt).toLocaleDateString(
+                'es-ES',
+                { day: 'numeric', month: 'short' }
+              );
+              return (
+                <div
+                  key={notif.id}
+                  className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-[#07080B] border border-[#1B1E26]"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <CharacterAvatar charId={charId} size="sm" />
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold text-[#F1F5F9] truncate">
+                        {notif.fromUsername}{' '}
+                        <span className="text-xs font-normal text-[#8A92A2]">
+                          te agregó como amigo
+                        </span>
+                      </div>
+                      <div className="text-xs text-[#8A92A2] tabular-nums">
+                        Nv.{level} · {dateLabel}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {!alreadyFriend ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onToggleFriend(notif.fromUsername);
+                          onMarkFriendNotificationsRead?.([notif.id]);
+                        }}
+                        className="min-h-[38px] px-3 rounded-lg bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] text-xs font-extrabold inline-flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        <UserPlus className="w-3.5 h-3.5" />
+                        Agregar
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onMarkFriendNotificationsRead?.([notif.id])
+                        }
+                        className="min-h-[38px] px-3 rounded-lg bg-[#101218] border border-[#1B1E26] text-xs font-bold text-[#22C55E] whitespace-nowrap"
+                      >
+                        ✓ Amigo
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
       <div className="flex items-center justify-center gap-2 overflow-x-auto no-scrollbar pb-1">
         <button
           type="button"
