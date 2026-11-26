@@ -47,6 +47,7 @@ interface DbUserRecord {
   xp: number;
   workoutsDone: number;
   prs: Record<string, number>;
+  oneRmRecords?: Record<string, number>;
   history: unknown[];
   friends: string[];
   friendNotifications?: FriendNotification[];
@@ -674,6 +675,163 @@ async function startServer() {
     });
   });
 
+  app.post('/api/auth/resume-pvp', (req, res) => {
+    if (!verifyMutationOrigin(req, res)) return;
+    res.setHeader('Cache-Control', 'no-store');
+
+    const body = (req.body || {}) as {
+      profile?: Partial<DbUserRecord>;
+      activeWorkout?: unknown;
+    };
+    const incoming = body.profile;
+    if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+      res.status(400).json({ error: 'Perfil requerido para reconectar.' });
+      return;
+    }
+
+    const rawUsername = String(incoming.username || '').trim();
+    if (
+      rawUsername.length < 3 ||
+      rawUsername.length > 48 ||
+      rawUsername === '__proto__' ||
+      rawUsername === 'constructor' ||
+      rawUsername === 'prototype'
+    ) {
+      res.status(400).json({ error: 'Nombre de usuario inválido.' });
+      return;
+    }
+
+    const db = readPersistedState();
+    const existingKey = resolveUsernameKey(db.users, rawUsername);
+    const incomingEmail = String(incoming.email || '').trim().toLowerCase();
+
+    if (existingKey && db.users[existingKey]) {
+      const existing = db.users[existingKey];
+      const existingEmail = String(existing.email || '').trim().toLowerCase();
+      const emailMatches =
+        (existingEmail && incomingEmail && existingEmail === incomingEmail) ||
+        (!incomingEmail &&
+          (!existingEmail || existingEmail.endsWith('@animefit.local')));
+
+      if (!emailMatches) {
+        res.status(403).json({
+          error: 'No se pudo validar automáticamente este perfil en el servidor.',
+        });
+        return;
+      }
+
+      const merged = mergeIncomingProfileIntoRecord(existing, incoming, db);
+      db.users[existingKey] = merged;
+      if (
+        'activeWorkout' in body &&
+        body.activeWorkout &&
+        typeof body.activeWorkout === 'object' &&
+        !db.activeWorkouts[existingKey]
+      ) {
+        db.activeWorkouts[existingKey] = body.activeWorkout;
+      }
+      writePersistedState(db);
+
+      const token = crypto.randomBytes(32).toString('hex');
+      const sessions = readSessions();
+      sessions[hashSessionToken(token)] = {
+        username: existingKey,
+        createdAt: Date.now(),
+      };
+      writeSessions(sessions);
+      setSessionCookie(req, res, token);
+
+      res.json({
+        ok: true,
+        user: sanitizeSelfUser(merged),
+        activeWorkout: db.activeWorkouts[existingKey] || null,
+        groups: db.groups || [],
+        publicUsers: sanitizePublicUsers(db.users),
+        sessionToken: token,
+        wsToken: signWsToken(existingKey),
+      });
+      return;
+    }
+
+    // Server memory/ephemeral disk was reset (e.g. Render cold start):
+    // rebuild the user record safely from the client's cached profile.
+    const safeEmail =
+      incomingEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(incomingEmail)
+        ? incomingEmail
+        : `${rawUsername.toLowerCase()}@animefit.local`;
+
+    const baseRecord: DbUserRecord = {
+      username: rawUsername,
+      email: safeEmail,
+      passHash: hashPassword(crypto.randomBytes(24).toString('hex')),
+      charId:
+        typeof incoming.charId === 'string' && incoming.charId.trim()
+          ? incoming.charId.trim()
+          : 'goku',
+      xp: Math.max(0, Number(incoming.xp || 0) || 0),
+      workoutsDone: Math.max(0, Number(incoming.workoutsDone || 0) || 0),
+      prs:
+        incoming.prs && typeof incoming.prs === 'object' && !Array.isArray(incoming.prs)
+          ? (incoming.prs as Record<string, number>)
+          : {},
+      oneRmRecords: sanitizeOneRmRecordsPayload(incoming.oneRmRecords, {}),
+      history: Array.isArray(incoming.history) ? incoming.history.slice(-40) : [],
+      friends: Array.isArray(incoming.friends)
+        ? incoming.friends
+            .map((f) => resolveUsernameKey(db.users, String(f || '')))
+            .filter((f): f is string => Boolean(f && f !== rawUsername))
+        : [],
+      friendNotifications: [],
+      groups: Array.isArray(incoming.groups) ? incoming.groups : [],
+      customExercises: Array.isArray(incoming.customExercises)
+        ? incoming.customExercises
+        : [],
+      routines: Array.isArray(incoming.routines) ? incoming.routines : [],
+      routineFolders: Array.isArray(incoming.routineFolders)
+        ? incoming.routineFolders
+        : [],
+      storyRoutineId:
+        typeof incoming.storyRoutineId === 'string'
+          ? incoming.storyRoutineId
+          : undefined,
+      pvpWins: Math.max(0, Number(incoming.pvpWins || 0) || 0),
+      pvpLosses: Math.max(0, Number(incoming.pvpLosses || 0) || 0),
+      story: incoming.story !== undefined ? incoming.story : undefined,
+      profileSetup:
+        incoming.profileSetup !== undefined ? incoming.profileSetup : undefined,
+      wellness: sanitizeWellnessPayload(incoming.wellness, undefined),
+    };
+
+    db.users[rawUsername] = baseRecord;
+    if (
+      'activeWorkout' in body &&
+      body.activeWorkout &&
+      typeof body.activeWorkout === 'object'
+    ) {
+      db.activeWorkouts[rawUsername] = body.activeWorkout;
+    }
+    writePersistedState(db);
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const sessions = readSessions();
+    sessions[hashSessionToken(token)] = {
+      username: rawUsername,
+      createdAt: Date.now(),
+    };
+    writeSessions(sessions);
+    setSessionCookie(req, res, token);
+
+    res.json({
+      ok: true,
+      user: sanitizeSelfUser(baseRecord),
+      activeWorkout: db.activeWorkouts[rawUsername] || null,
+      groups: db.groups || [],
+      publicUsers: sanitizePublicUsers(db.users),
+      sessionToken: token,
+      wsToken: signWsToken(rawUsername),
+    });
+  });
+
   app.post('/api/auth/login', (req, res) => {
     if (!verifyMutationOrigin(req, res)) return;
     const body = (req.body || {}) as { identifier?: unknown; password?: unknown };
@@ -794,6 +952,7 @@ async function startServer() {
       xp: 0,
       workoutsDone: 0,
       prs: {},
+      oneRmRecords: {},
       history: [],
       friends: [],
       groups: [],
@@ -1048,6 +1207,124 @@ async function startServer() {
     };
   }
 
+  function sanitizeOneRmRecordsPayload(
+    incomingRaw: unknown,
+    existingRaw: unknown
+  ): Record<string, number> {
+    const out: Record<string, number> = {};
+    const addEntries = (src: unknown) => {
+      if (!src || typeof src !== 'object' || Array.isArray(src)) return;
+      for (const [k, v] of Object.entries(src as Record<string, unknown>)) {
+        if (
+          !k ||
+          k.length > 80 ||
+          k === '__proto__' ||
+          k === 'constructor' ||
+          k === 'prototype'
+        ) {
+          continue;
+        }
+        const num = Number(v);
+        if (!Number.isFinite(num) || num <= 0 || num > 2000) continue;
+        const rounded = Math.round(num * 10) / 10;
+        if (rounded > (out[k] || 0)) {
+          out[k] = rounded;
+        }
+      }
+    };
+    addEntries(existingRaw);
+    addEntries(incomingRaw);
+    const keys = Object.keys(out).slice(0, 500);
+    const bounded: Record<string, number> = {};
+    for (const k of keys) {
+      bounded[k] = out[k];
+    }
+    return bounded;
+  }
+
+  function mergeIncomingProfileIntoRecord(
+    existing: DbUserRecord,
+    incoming: Partial<DbUserRecord>,
+    db: DbShape
+  ): DbUserRecord {
+    const sanitizedWellness = sanitizeWellnessPayload(
+      incoming.wellness,
+      existing.wellness
+    );
+    const nextFriends = Array.isArray(incoming.friends)
+      ? incoming.friends
+          .map((f) => resolveUsernameKey(db.users, String(f || '')))
+          .filter((f): f is string => Boolean(f && f !== existing.username))
+      : existing.friends;
+
+    const merged: DbUserRecord = {
+      ...existing,
+      email:
+        typeof incoming.email === 'string' && incoming.email.trim()
+          ? incoming.email
+          : existing.email,
+      charId:
+        typeof incoming.charId === 'string' && incoming.charId.trim()
+          ? incoming.charId
+          : existing.charId,
+      xp: Math.max(Number(existing.xp || 0), Number(incoming.xp || 0)),
+      workoutsDone: Math.max(
+        Number(existing.workoutsDone || 0),
+        Number(incoming.workoutsDone || 0)
+      ),
+      pvpWins: Math.max(
+        Number(existing.pvpWins || 0),
+        Number(incoming.pvpWins || 0)
+      ),
+      pvpLosses: Math.max(
+        Number(existing.pvpLosses || 0),
+        Number(incoming.pvpLosses || 0)
+      ),
+      prs:
+        incoming.prs && typeof incoming.prs === 'object'
+          ? { ...(existing.prs || {}), ...incoming.prs }
+          : existing.prs,
+      oneRmRecords: sanitizeOneRmRecordsPayload(
+        incoming.oneRmRecords,
+        existing.oneRmRecords
+      ),
+      history:
+        Array.isArray(incoming.history) &&
+        incoming.history.length >= (Array.isArray(existing.history) ? existing.history.length : 0)
+          ? incoming.history
+          : existing.history,
+      friends: nextFriends,
+      friendNotifications: Array.isArray(existing.friendNotifications)
+        ? existing.friendNotifications
+        : [],
+      groups: Array.isArray(incoming.groups) ? incoming.groups : existing.groups,
+      customExercises: Array.isArray(incoming.customExercises)
+        ? incoming.customExercises
+        : existing.customExercises,
+      routines:
+        Array.isArray(incoming.routines) && incoming.routines.length > 0
+          ? incoming.routines
+          : existing.routines,
+      routineFolders: Array.isArray(incoming.routineFolders)
+        ? incoming.routineFolders
+        : existing.routineFolders,
+      storyRoutineId:
+        typeof incoming.storyRoutineId === 'string'
+          ? incoming.storyRoutineId
+          : existing.storyRoutineId,
+      story: incoming.story !== undefined ? incoming.story : existing.story,
+      profileSetup:
+        incoming.profileSetup !== undefined
+          ? incoming.profileSetup
+          : existing.profileSetup,
+      wellness: sanitizedWellness,
+      username: existing.username,
+      passHash: existing.passHash,
+    };
+    delete merged.pass;
+    return merged;
+  }
+
   app.put('/api/user/sync', (req, res) => {
     if (!verifyMutationOrigin(req, res)) return;
     const db = readPersistedState();
@@ -1116,6 +1393,10 @@ async function startServer() {
           incoming.prs && typeof incoming.prs === 'object'
             ? incoming.prs
             : existing.prs,
+        oneRmRecords: sanitizeOneRmRecordsPayload(
+          incoming.oneRmRecords,
+          existing.oneRmRecords
+        ),
         history: Array.isArray(incoming.history) ? incoming.history : existing.history,
         friends: nextFriends,
         friendNotifications: Array.isArray(existing.friendNotifications)
@@ -1498,7 +1779,30 @@ async function startServer() {
     broadcastMatch(match);
   };
 
+  const aliveSockets = new Map<WebSocket, boolean>();
+  const wsHeartbeatTimer = setInterval(() => {
+    for (const client of wss.clients) {
+      if (aliveSockets.get(client) === false) {
+        client.terminate();
+        continue;
+      }
+      aliveSockets.set(client, false);
+      if (client.readyState === WebSocket.OPEN) {
+        try {
+          client.ping();
+        } catch {
+          // ignore broken socket
+        }
+      }
+    }
+  }, 25000);
+  wss.on('close', () => clearInterval(wsHeartbeatTimer));
+
   wss.on('connection', (ws: WebSocket) => {
+    aliveSockets.set(ws, true);
+    ws.on('pong', () => {
+      aliveSockets.set(ws, true);
+    });
     ws.on('message', (raw) => {
       let msg: Record<string, unknown>;
       try {
@@ -1778,6 +2082,7 @@ async function startServer() {
     });
 
     ws.on('close', () => {
+      aliveSockets.delete(ws);
       const uname = socketToUser.get(ws);
       socketToUser.delete(ws);
       socketVerifiedUser.delete(ws);

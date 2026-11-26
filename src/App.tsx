@@ -49,6 +49,7 @@ import {
   WorkoutSummaryInfo,
 } from './types/animefit';
 import {
+  AuthSessionPayload,
   apiChangePassword,
   apiCreateGroup,
   apiDeleteAccount,
@@ -78,6 +79,9 @@ import {
 interface ToastItem {
   id: number;
   text: string;
+  variant?: 'default' | 'achievement';
+  title?: string;
+  subtitle?: string;
 }
 
 export default function App() {
@@ -130,11 +134,25 @@ export default function App() {
 
   const pushToast = useCallback((text: string) => {
     const id = Date.now() + Math.random();
-    setToasts((prev) => [...prev.slice(-2), { id, text }]);
+    setToasts((prev) => [...prev.slice(-2), { id, text, variant: 'default' }]);
     window.setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 3100);
   }, []);
+
+  const pushAchievementToast = useCallback(
+    (title: string, text: string, subtitle?: string) => {
+      const id = Date.now() + Math.random();
+      setToasts((prev) => [
+        ...prev.slice(-2),
+        { id, variant: 'achievement', title, text, subtitle },
+      ]);
+      window.setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, 5200);
+    },
+    []
+  );
 
   const latestDbRef = useRef(db);
   latestDbRef.current = db;
@@ -330,12 +348,10 @@ export default function App() {
 
   const toastedFriendNotifIdsRef = useRef<Set<string>>(new Set());
 
-  const showFriendSystemNotification = useCallback(
-    async (notif: FriendNotification) => {
+  const showLocalPwaNotification = useCallback(
+    async (title: string, body: string, tag: string) => {
       if (typeof window === 'undefined' || !('Notification' in window)) return;
       if (Notification.permission !== 'granted') return;
-      const title = '🤝 ¡Nuevo amigo en AnimeFit!';
-      const body = `${notif.fromUsername} (Nv.${notif.fromLevel}) te agregó como amigo.`;
       if ('serviceWorker' in navigator) {
         try {
           const reg = await Promise.race<ServiceWorkerRegistration | null>([
@@ -347,7 +363,7 @@ export default function App() {
               body,
               icon: '/pwa-192x192.png',
               badge: '/pwa-192x192.png',
-              tag: `animefit-friend-${notif.id}`,
+              tag,
               data: { url: '/' },
             });
             return;
@@ -363,6 +379,17 @@ export default function App() {
       }
     },
     []
+  );
+
+  const showFriendSystemNotification = useCallback(
+    async (notif: FriendNotification) => {
+      await showLocalPwaNotification(
+        '🤝 ¡Nuevo amigo en AnimeFit!',
+        `${notif.fromUsername} (Nv.${notif.fromLevel}) te agregó como amigo.`,
+        `animefit-friend-${notif.id}`
+      );
+    },
+    [showLocalPwaNotification]
   );
 
   const handleIncomingFriendAdded = useCallback(
@@ -416,11 +443,50 @@ export default function App() {
     }
   }, [currentUser, pushToast, showFriendSystemNotification]);
 
+  const handlePvpSessionResumed = useCallback(
+    (payload: AuthSessionPayload) => {
+      setDb((prev) => {
+        const mergedUsers = {
+          ...(payload.publicUsers || {}),
+          ...prev.users,
+        };
+        const activeUsername = prev.sessionUser;
+        if (activeUsername && payload.user && prev.users[activeUsername]) {
+          const localSelf = prev.users[activeUsername];
+          const serverSelf = payload.user;
+          mergedUsers[activeUsername] = {
+            ...serverSelf,
+            ...localSelf,
+            xp: Math.max(serverSelf.xp || 0, localSelf.xp || 0),
+            workoutsDone: Math.max(
+              serverSelf.workoutsDone || 0,
+              localSelf.workoutsDone || 0
+            ),
+            friendNotifications:
+              serverSelf.friendNotifications || localSelf.friendNotifications,
+          };
+        }
+        const next: AppDB = {
+          ...prev,
+          users: mergedUsers,
+          groups:
+            payload.groups && payload.groups.length > 0
+              ? payload.groups
+              : prev.groups,
+        };
+        latestDbRef.current = next;
+        return next;
+      });
+    },
+    []
+  );
+
   const pvp = usePvpSocket({
     user: currentUser,
     serverSessionEpoch,
     onNotify: pushToast,
     onFriendAdded: handleIncomingFriendAdded,
+    onSessionResumed: handlePvpSessionResumed,
     onReward: handlePvpReward,
   });
 
@@ -445,61 +511,6 @@ export default function App() {
     setServerSessionEpoch((n) => n + 1);
     setMainTab('entrenar');
   };
-
-  const handleReconnectPvpSession = useCallback(
-    async (
-      password: string
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      if (!currentUser) {
-        return { ok: false, error: 'No hay un usuario activo.' };
-      }
-      const res = await apiLogin(currentUser.username, password);
-      if (!res.ok) {
-        return { ok: false, error: res.error };
-      }
-
-      markExplicitLogout(false);
-      const serverDb = buildAppDBFromServerAuth(res.data);
-      const serverSelf = serverDb.users[currentUser.username];
-      if (serverSelf) {
-        serverDb.users[currentUser.username] = {
-          ...serverSelf,
-          xp: Math.max(serverSelf.xp || 0, currentUser.xp || 0),
-          workoutsDone: Math.max(
-            serverSelf.workoutsDone || 0,
-            currentUser.workoutsDone || 0
-          ),
-          prs:
-            Object.keys(currentUser.prs || {}).length >=
-            Object.keys(serverSelf.prs || {}).length
-              ? currentUser.prs
-              : serverSelf.prs,
-          history:
-            (currentUser.history || []).length >=
-            (serverSelf.history || []).length
-              ? currentUser.history
-              : serverSelf.history,
-          routines:
-            (currentUser.routines || []).length > 0
-              ? currentUser.routines
-              : serverSelf.routines,
-          routineFolders:
-            (currentUser.routineFolders || []).length > 0
-              ? currentUser.routineFolders
-              : serverSelf.routineFolders,
-          profileSetup: currentUser.profileSetup || serverSelf.profileSetup,
-          wellness: currentUser.wellness || serverSelf.wellness,
-        };
-      }
-      latestDbRef.current = serverDb;
-      setDb(serverDb);
-      persistDB(serverDb, true);
-      setServerSessionEpoch((n) => n + 1);
-      pushToast('⚡ ¡Sesión validada! Conectando a la Arena PvP...');
-      return { ok: true };
-    },
-    [currentUser, pushToast]
-  );
 
   const handleRegister = async (
     rawUsername: string,
@@ -727,6 +738,66 @@ export default function App() {
     });
   }, []);
 
+  const handleRecordOneRM = useCallback(
+    (params: {
+      exId: string;
+      exerciseName: string;
+      newOneRm: number;
+      prevOneRm: number;
+      weight: number;
+      reps: number;
+      isAchievement: boolean;
+    }) => {
+      const {
+        exId,
+        exerciseName,
+        newOneRm,
+        prevOneRm,
+        weight,
+        reps,
+        isAchievement,
+      } = params;
+      if (newOneRm <= 0) return;
+
+      setDb((prev) => {
+        if (!prev.sessionUser) return prev;
+        const u = prev.users[prev.sessionUser];
+        if (!u) return prev;
+        const existingStored = Number(u.oneRmRecords?.[exId] || 0);
+        if (newOneRm <= existingStored) return prev;
+        const next: AppDB = {
+          ...prev,
+          users: {
+            ...prev.users,
+            [prev.sessionUser]: {
+              ...u,
+              oneRmRecords: {
+                ...(u.oneRmRecords || {}),
+                [exId]: newOneRm,
+              },
+            },
+          },
+        };
+        persistDB(next, isAchievement);
+        return next;
+      });
+
+      if (isAchievement && prevOneRm > 0) {
+        const diff = Math.round((newOneRm - prevOneRm) * 10) / 10;
+        const title = '🏅 ¡Logro Desbloqueado: Nuevo 1RM!';
+        const text = `${exerciseName}: ${newOneRm} kg (+${diff} kg sobre ${prevOneRm} kg)`;
+        const subtitle = `${weight} kg × ${reps} reps · Fórmula 1RM superada`;
+        pushAchievementToast(title, text, subtitle);
+        void showLocalPwaNotification(
+          title,
+          `${text} (${weight} kg × ${reps} reps)`,
+          `animefit-1rm-${exId}-${newOneRm}`
+        );
+      }
+    },
+    [pushAchievementToast, showLocalPwaNotification]
+  );
+
   const handleCancelActiveWorkout = () => {
     if (!currentUser) return;
     updateDb((prev) => {
@@ -741,6 +812,7 @@ export default function App() {
 
     let completedSets = 0;
     let prCount = 0;
+    let oneRmRecordCount = 0;
     let totalVolume = 0;
 
     activeWorkout.exercises.forEach((item) => {
@@ -748,6 +820,7 @@ export default function App() {
         if (s.done) {
           completedSets++;
           if (s.isPR) prCount++;
+          if (s.isOneRmPR) oneRmRecordCount++;
           const w = Number(s.weight) || 0;
           const r = Number(s.reps) || 0;
           totalVolume += w > 0 ? w * r : r * 15;
@@ -812,6 +885,7 @@ export default function App() {
       earnedXp,
       completedSets,
       prCount,
+      oneRmRecordCount,
       totalVolume: Math.round(totalVolume),
       prevLevel,
       newLevel,
@@ -1440,16 +1514,36 @@ export default function App() {
   const toastLayer = (
     <div
       aria-live="polite"
-      className="fixed top-16 left-1/2 -translate-x-1/2 z-[70] flex flex-col gap-1.5 pointer-events-none w-[92%] max-w-md"
+      className="fixed top-16 left-1/2 -translate-x-1/2 z-[70] flex flex-col gap-2 pointer-events-none w-[92%] max-w-md"
     >
-      {toasts.map((t) => (
-        <div
-          key={t.id}
-          className="bg-[#0A0B0F] border border-[#FACC15] text-[#F1F5F9] px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold text-center shadow-2xl"
-        >
-          {t.text}
-        </div>
-      ))}
+      {toasts.map((t) =>
+        t.variant === 'achievement' ? (
+          <div
+            key={t.id}
+            role="status"
+            className="bg-gradient-to-br from-[#131722] via-[#0A0B0F] to-[#1A1506] border-2 border-[#FACC15] text-[#F1F5F9] px-4 py-3 rounded-2xl shadow-[0_12px_32px_rgba(250,204,21,0.24)] text-left"
+          >
+            <div className="text-[11px] font-black uppercase tracking-wider text-[#FACC15]">
+              {t.title || '🏅 ¡Logro Desbloqueado!'}
+            </div>
+            <div className="text-xs sm:text-sm font-extrabold text-[#F1F5F9] mt-0.5 tabular-nums">
+              {t.text}
+            </div>
+            {t.subtitle && (
+              <div className="text-[11px] font-semibold text-[#38BDF8] mt-0.5 tabular-nums">
+                {t.subtitle}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div
+            key={t.id}
+            className="bg-[#0A0B0F] border border-[#FACC15] text-[#F1F5F9] px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold text-center shadow-2xl"
+          >
+            {t.text}
+          </div>
+        )
+      )}
     </div>
   );
 
@@ -1618,6 +1712,7 @@ export default function App() {
             onStartRoutineWorkout={handleStartRoutineWorkout}
             onUpdateActiveWorkout={handleUpdateActiveWorkout}
             onRecordPR={handleRecordPR}
+            onRecordOneRM={handleRecordOneRM}
             onCancelActiveWorkout={handleCancelActiveWorkout}
             onFinishActiveWorkout={handleFinishActiveWorkout}
             onSaveRoutine={handleSaveRoutine}
@@ -1663,12 +1758,11 @@ export default function App() {
             currentUser={currentUser}
             allUsers={db.users}
             connected={pvp.connected}
-            authRequired={pvp.authRequired}
             onlineUsers={pvp.onlineUsers}
             incomingInvites={pvp.incomingInvites}
             roomCode={pvp.roomCode}
             activeMatch={pvp.activeMatch}
-            onReconnectSession={handleReconnectPvpSession}
+            onRetryConnect={pvp.retryConnect}
             onAddFriendByName={handleAddFriendByName}
             onSendChallenge={pvp.sendChallenge}
             onAcceptInvite={pvp.acceptInvite}

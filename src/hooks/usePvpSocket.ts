@@ -7,7 +7,10 @@ import {
   UserProfile,
 } from '../types/animefit';
 import {
+  AuthSessionPayload,
   apiFetchWsToken,
+  apiResumePvpSession,
+  clearInMemoryAuthTokens,
   getCharacterStage,
   getInMemoryWsToken,
   getLevelInfo,
@@ -25,7 +28,7 @@ interface UsePvpSocketOptions {
   serverSessionEpoch?: number;
   onNotify: (msg: string) => void;
   onFriendAdded?: (notification: FriendNotification) => void;
-  onServerAuthRequired?: () => void;
+  onSessionResumed?: (payload: AuthSessionPayload) => void;
   onReward: (payload: {
     xpEarned: number;
     won: boolean;
@@ -40,25 +43,24 @@ export function usePvpSocket({
   serverSessionEpoch = 0,
   onNotify,
   onFriendAdded,
-  onServerAuthRequired,
+  onSessionResumed,
   onReward,
 }: UsePvpSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const onNotifyRef = useRef(onNotify);
   const onFriendAddedRef = useRef(onFriendAdded);
-  const onServerAuthRequiredRef = useRef(onServerAuthRequired);
+  const onSessionResumedRef = useRef(onSessionResumed);
   const onRewardRef = useRef(onReward);
   const userRef = useRef(user);
 
   onNotifyRef.current = onNotify;
   onFriendAddedRef.current = onFriendAdded;
-  onServerAuthRequiredRef.current = onServerAuthRequired;
+  onSessionResumedRef.current = onSessionResumed;
   onRewardRef.current = onReward;
   userRef.current = user;
 
   const [connected, setConnected] = useState(false);
-  const [authRequired, setAuthRequired] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
   const [onlineUsers, setOnlineUsers] = useState<OnlinePvpUser[]>([]);
   const [incomingInvites, setIncomingInvites] = useState<PvpInvite[]>([]);
@@ -66,7 +68,6 @@ export function usePvpSocket({
   const [activeMatch, setActiveMatch] = useState<PvpMatchState | null>(null);
 
   const retryConnect = useCallback(() => {
-    setAuthRequired(false);
     setRetryNonce((n) => n + 1);
   }, []);
 
@@ -95,7 +96,6 @@ export function usePvpSocket({
       wsRef.current?.close();
       wsRef.current = null;
       setConnected(false);
-      setAuthRequired(false);
       setOnlineUsers([]);
       setIncomingInvites([]);
       setRoomCode(null);
@@ -104,46 +104,81 @@ export function usePvpSocket({
     }
 
     let cancelled = false;
-    let authStopped = false;
     let attempt = 0;
-    let refreshedAfterAuthError = false;
+    let connecting = false;
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
 
     const scheduleReconnect = () => {
-      if (cancelled || authStopped) return;
-      const delay = Math.min(8000, 1000 * Math.pow(1.5, attempt));
-      attempt += 1;
+      if (cancelled) return;
+      clearReconnectTimer();
+      const delay = Math.min(6000, Math.round(900 * Math.pow(1.45, attempt)));
+      attempt = Math.min(attempt + 1, 6);
       reconnectTimerRef.current = window.setTimeout(() => {
+        reconnectTimerRef.current = null;
         void connect(false);
       }, delay);
     };
 
-    const connect = async (forceRefreshToken: boolean) => {
-      if (cancelled || authStopped) return;
-
-      let activeToken = forceRefreshToken ? null : getInMemoryWsToken();
-      if (!activeToken) {
-        const tokenRes = await apiFetchWsToken();
-        if (cancelled) return;
-        if (tokenRes.ok) {
-          activeToken = tokenRes.wsToken;
-          setAuthRequired(false);
-        } else if (tokenRes.unauthenticated) {
-          authStopped = true;
-          setConnected(false);
-          setAuthRequired(true);
-          onServerAuthRequiredRef.current?.();
-          return;
-        } else {
-          scheduleReconnect();
-          return;
-        }
+    const resolveWsTokenSilently = async (
+      forceRefreshToken: boolean
+    ): Promise<string | null> => {
+      if (forceRefreshToken) {
+        clearInMemoryAuthTokens();
+      } else {
+        const cached = getInMemoryWsToken();
+        if (cached) return cached;
       }
 
-      if (cancelled || authStopped) return;
+      const tokenRes = await apiFetchWsToken();
+      if (cancelled) return null;
+      if (tokenRes.ok) {
+        return tokenRes.wsToken;
+      }
 
-      const endpoint = activeToken
-        ? wsUrl(`/ws/pvp?token=${encodeURIComponent(activeToken)}`)
-        : wsUrl('/ws/pvp');
+      if (tokenRes.unauthenticated && userRef.current) {
+        const resumed = await apiResumePvpSession(userRef.current);
+        if (cancelled) return null;
+        if (resumed.ok && resumed.data.wsToken) {
+          onSessionResumedRef.current?.(resumed.data);
+          return resumed.data.wsToken;
+        }
+      }
+      return null;
+    };
+
+    const connect = async (forceRefreshToken: boolean) => {
+      if (cancelled || connecting) return;
+      const existingWs = wsRef.current;
+      if (
+        !forceRefreshToken &&
+        existingWs &&
+        (existingWs.readyState === WebSocket.OPEN ||
+          existingWs.readyState === WebSocket.CONNECTING)
+      ) {
+        return;
+      }
+
+      connecting = true;
+      let activeToken: string | null = null;
+      try {
+        activeToken = await resolveWsTokenSilently(forceRefreshToken);
+      } finally {
+        connecting = false;
+      }
+
+      if (cancelled) return;
+      if (!activeToken) {
+        scheduleReconnect();
+        return;
+      }
+
+      const endpoint = wsUrl(`/ws/pvp?token=${encodeURIComponent(activeToken)}`);
       const ws = new WebSocket(endpoint);
       wsRef.current = ws;
 
@@ -153,6 +188,7 @@ export function usePvpSocket({
           return;
         }
         attempt = 0;
+        clearReconnectTimer();
         setConnected(true);
         if (userRef.current) {
           sendAuth(ws, userRef.current, activeToken);
@@ -169,7 +205,6 @@ export function usePvpSocket({
         const type = String(msg.type || '');
 
         if (type === 'pvp:presence') {
-          setAuthRequired(false);
           setOnlineUsers((msg.users as OnlinePvpUser[]) || []);
         } else if (type === 'pvp:invite') {
           const invite = msg.invite as PvpInvite;
@@ -220,17 +255,8 @@ export function usePvpSocket({
             code === 'AUTH_REQUIRED' ||
             message.includes('Debes iniciar sesión')
           ) {
-            if (!refreshedAfterAuthError) {
-              refreshedAfterAuthError = true;
-              ws.close();
-              void connect(true);
-            } else {
-              authStopped = true;
-              setConnected(false);
-              setAuthRequired(true);
-              onServerAuthRequiredRef.current?.();
-              ws.close();
-            }
+            clearInMemoryAuthTokens();
+            ws.close();
             return;
           }
           onNotifyRef.current(message);
@@ -238,19 +264,44 @@ export function usePvpSocket({
       };
 
       ws.onclose = () => {
+        if (wsRef.current === ws) {
+          wsRef.current = null;
+        }
         setConnected(false);
-        if (cancelled || authStopped) return;
+        if (cancelled) return;
         scheduleReconnect();
       };
     };
 
+    const handleWakeOrOnline = () => {
+      if (cancelled) return;
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden'
+      ) {
+        return;
+      }
+      const currentWs = wsRef.current;
+      if (
+        !currentWs ||
+        (currentWs.readyState !== WebSocket.OPEN &&
+          currentWs.readyState !== WebSocket.CONNECTING)
+      ) {
+        attempt = 0;
+        clearReconnectTimer();
+        void connect(false);
+      }
+    };
+
+    window.addEventListener('online', handleWakeOrOnline);
+    document.addEventListener('visibilitychange', handleWakeOrOnline);
     void connect(false);
 
     return () => {
       cancelled = true;
-      if (reconnectTimerRef.current) {
-        window.clearTimeout(reconnectTimerRef.current);
-      }
+      window.removeEventListener('online', handleWakeOrOnline);
+      document.removeEventListener('visibilitychange', handleWakeOrOnline);
+      clearReconnectTimer();
       wsRef.current?.close();
       wsRef.current = null;
     };
@@ -269,12 +320,12 @@ export function usePvpSocket({
       return true;
     }
     onNotifyRef.current('Reconectando con la arena PvP...');
+    retryConnect();
     return false;
-  }, []);
+  }, [retryConnect]);
 
   return {
     connected,
-    authRequired,
     retryConnect,
     onlineUsers,
     incomingInvites,

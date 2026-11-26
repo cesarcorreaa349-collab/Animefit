@@ -471,21 +471,43 @@ export async function syncDBFromBackups(localDb: AppDB): Promise<AppDB | null> {
       serverSessionStatus = 'unauthenticated';
       inMemoryWsToken = null;
 
-      // Preserve saved local/IDB session unless user explicitly logged out
+      // Preserve saved local/IDB session unless user explicitly logged out,
+      // and silently resume the server session in the background for PvP/sync
       if (
         !isExplicitlyLoggedOut() &&
         effectiveLocal.sessionUser &&
         effectiveLocal.users?.[effectiveLocal.sessionUser]
       ) {
         const preservedUser = effectiveLocal.users[effectiveLocal.sessionUser];
+        const preservedActive =
+          effectiveLocal.activeWorkouts?.[preservedUser.username] || null;
+        const resumed = await apiResumePvpSession(preservedUser, preservedActive);
+        const resumedData = resumed.ok ? resumed.data : null;
+
         const mergedDb = sanitizeDB({
           users: {
             ...(data.publicUsers || {}),
+            ...(resumedData?.publicUsers || {}),
             ...effectiveLocal.users,
-            [preservedUser.username]: preservedUser,
+            [preservedUser.username]: resumedData?.user
+              ? {
+                  ...resumedData.user,
+                  ...preservedUser,
+                  xp: Math.max(resumedData.user.xp || 0, preservedUser.xp || 0),
+                  workoutsDone: Math.max(
+                    resumedData.user.workoutsDone || 0,
+                    preservedUser.workoutsDone || 0
+                  ),
+                  friendNotifications:
+                    resumedData.user.friendNotifications ||
+                    preservedUser.friendNotifications,
+                }
+              : preservedUser,
           },
           groups:
-            data.groups && data.groups.length > 0
+            resumedData?.groups && resumedData.groups.length > 0
+              ? resumedData.groups
+              : data.groups && data.groups.length > 0
               ? data.groups
               : effectiveLocal.groups,
           sessionUser: preservedUser.username,
@@ -548,6 +570,43 @@ export async function apiFetchWsToken(): Promise<
     return { ok: false, unauthenticated: false };
   } catch {
     return { ok: false, unauthenticated: false };
+  }
+}
+
+export async function apiResumePvpSession(
+  profile: UserProfile,
+  activeWorkout?: ActiveWorkout | null
+): Promise<
+  | { ok: true; data: AuthSessionPayload }
+  | { ok: false; rejected: boolean }
+> {
+  try {
+    const cleanProfile: UserProfile = { ...profile };
+    delete cleanProfile.pass;
+    const res = await fetch(apiUrl('/api/auth/resume-pvp'), {
+      method: 'POST',
+      credentials: 'include',
+      cache: 'no-store',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'animefit',
+      },
+      body: JSON.stringify({
+        profile: cleanProfile,
+        ...(activeWorkout !== undefined ? { activeWorkout } : {}),
+      }),
+    });
+    if (!res.ok) {
+      return { ok: false, rejected: res.status === 400 || res.status === 403 };
+    }
+    const json = (await res.json()) as AuthSessionPayload;
+    if (json.sessionToken || json.wsToken) {
+      serverSessionStatus = 'authenticated';
+      setInMemoryAuthTokens(json.sessionToken, json.wsToken);
+    }
+    return { ok: true, data: json };
+  } catch {
+    return { ok: false, rejected: false };
   }
 }
 
@@ -839,6 +898,89 @@ export function getLastExerciseSetsHistory(
     }
   }
   return null;
+}
+
+export function calculateEstimated1RM(weight: number, reps: number): number {
+  if (
+    !Number.isFinite(weight) ||
+    !Number.isFinite(reps) ||
+    weight <= 0 ||
+    reps <= 0
+  ) {
+    return 0;
+  }
+  if (reps <= 1) {
+    return Math.round(weight * 10) / 10;
+  }
+  const estimated = weight * (1 + reps / 30);
+  return Math.round(estimated * 10) / 10;
+}
+
+export function getBestOneRmFromHistory(
+  user: UserProfile,
+  exId: string,
+  isCardio = false
+): number {
+  if (isCardio) return 0;
+  let best = 0;
+  const hist = user.history || [];
+  for (const entry of hist) {
+    for (const ex of entry.exercises || []) {
+      if (ex.exId !== exId) continue;
+      for (const s of ex.sets || []) {
+        if (!s.done) continue;
+        const est = calculateEstimated1RM(
+          Number(s.weight) || 0,
+          Number(s.reps) || 0
+        );
+        if (est > best) best = est;
+      }
+    }
+  }
+  return best;
+}
+
+export function getBestOneRmForExercise(
+  user: UserProfile,
+  exId: string,
+  isCardio = false
+): number {
+  if (isCardio) return 0;
+  const stored = Number(user.oneRmRecords?.[exId] || 0);
+  const fromHistory = getBestOneRmFromHistory(user, exId, isCardio);
+  return Math.max(
+    Number.isFinite(stored) && stored > 0 ? Math.round(stored * 10) / 10 : 0,
+    fromHistory
+  );
+}
+
+export function getAllOneRmRecordEntries(
+  user: UserProfile
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [exId, val] of Object.entries(user.oneRmRecords || {})) {
+    const num = Number(val);
+    if (Number.isFinite(num) && num > 0) {
+      out[exId] = Math.round(num * 10) / 10;
+    }
+  }
+  for (const entry of user.history || []) {
+    for (const ex of entry.exercises || []) {
+      const exDef = getExerciseById(ex.exId, user);
+      if (exDef?.isCardio) continue;
+      for (const s of ex.sets || []) {
+        if (!s.done) continue;
+        const est = calculateEstimated1RM(
+          Number(s.weight) || 0,
+          Number(s.reps) || 0
+        );
+        if (est > (out[ex.exId] || 0)) {
+          out[ex.exId] = est;
+        }
+      }
+    }
+  }
+  return out;
 }
 
 export function formatDuration(ms: number): string {

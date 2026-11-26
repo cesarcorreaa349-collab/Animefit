@@ -76,6 +76,7 @@ export interface WorkoutSet {
   reps: number | '';
   done: boolean;
   isPR: boolean;
+  isOneRmPR?: boolean;
 }
 
 export interface ActiveWorkoutExercise {
@@ -212,6 +213,7 @@ export interface UserProfile {
   xp: number;
   workoutsDone: number;
   prs: Record<string, number>;
+  oneRmRecords?: Record<string, number>;
   history: WorkoutHistoryEntry[];
   friends: string[];
   friendNotifications?: FriendNotification[];
@@ -288,6 +290,7 @@ export interface WorkoutSummaryInfo {
   earnedXp: number;
   completedSets: number;
   prCount: number;
+  oneRmRecordCount?: number;
   totalVolume: number;
   prevLevel: number;
   newLevel: number;

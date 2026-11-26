@@ -27,8 +27,10 @@ import {
 import {
   beepRestDone,
   buildSmartRoutines,
+  calculateEstimated1RM,
   formatDuration,
   getAllExercisesForUser,
+  getBestOneRmForExercise,
   getExerciseById,
   getLastExerciseSetsHistory,
 } from '../utils/animefit';
@@ -49,6 +51,15 @@ interface TrainTabProps {
     toastMsg?: string
   ) => void;
   onRecordPR: (exId: string, score: number) => void;
+  onRecordOneRM: (params: {
+    exId: string;
+    exerciseName: string;
+    newOneRm: number;
+    prevOneRm: number;
+    weight: number;
+    reps: number;
+    isAchievement: boolean;
+  }) => void;
   onCancelActiveWorkout: () => void;
   onFinishActiveWorkout: () => WorkoutSummaryInfo | null;
   onSaveRoutine: (routine: Routine) => void;
@@ -110,6 +121,7 @@ export function TrainTab({
   onStartRoutineWorkout,
   onUpdateActiveWorkout,
   onRecordPR,
+  onRecordOneRM,
   onCancelActiveWorkout,
   onFinishActiveWorkout,
   onSaveRoutine,
@@ -534,6 +546,11 @@ export function TrainTab({
               if (!ex) return null;
               const prevHist = getLastExerciseSetsHistory(user, item.exId);
               const prBest = user.prs[item.exId] || 0;
+              const bestOneRm = getBestOneRmForExercise(
+                user,
+                item.exId,
+                ex.isCardio
+              );
               const metricUnit = ex.isCardio
                 ? 'min'
                 : ex.isBodyweight && (!prevHist || prevHist.bestWeight === 0)
@@ -567,6 +584,12 @@ export function TrainTab({
                             {' '}
                             · 🏆 PR {prBest}
                             {ex.isCardio ? ' min' : ' kg'}
+                          </span>
+                        )}
+                        {!ex.isCardio && bestOneRm > 0 && (
+                          <span className="text-[#38BDF8] font-bold">
+                            {' '}
+                            · 🏅 1RM {bestOneRm} kg
                           </span>
                         )}
                       </div>
@@ -649,16 +672,25 @@ export function TrainTab({
                           ? Number(prevSet.reps) || 0
                           : Number(prevSet.weight) || 0
                         : 0;
+                      const liveOneRm = !ex.isCardio
+                        ? calculateEstimated1RM(
+                            Number(s.weight) || 0,
+                            Number(s.reps) || 0
+                          )
+                        : 0;
+                      const beatsOneRmNow =
+                        liveOneRm > 0 && bestOneRm > 0 && liveOneRm > bestOneRm;
 
                       return (
                         <div
                           key={sIdx}
-                          className={`grid grid-cols-[38px_1fr_76px_76px_44px] gap-1.5 items-center p-1 rounded-xl border ${
+                          className={`rounded-xl border p-1 ${
                             s.done
                               ? 'bg-[#22C55E]/10 border-[#22C55E]/35'
                               : 'bg-[#030406]/60 border-transparent'
                           }`}
                         >
+                          <div className="grid grid-cols-[38px_1fr_76px_76px_44px] gap-1.5 items-center">
                           <div className="text-center font-extrabold text-xs text-[#38BDF8] tabular-nums leading-tight">
                             <span>{sIdx + 1}</span>
                             {s.done && s.isPR && (
@@ -752,6 +784,7 @@ export function TrainTab({
                               let weightVal = targetSet.weight;
                               let repsVal = targetSet.reps;
                               let isPR = false;
+                              let isOneRmPR = false;
 
                               if (nextDone) {
                                 if (weightVal === '' && ex.isBodyweight)
@@ -771,6 +804,35 @@ export function TrainTab({
                                   prevHist !== null &&
                                   prevSetTargetScore > 0 &&
                                   score > prevSetTargetScore;
+
+                                const numericWeight = Number(weightVal) || 0;
+                                const numericReps = Number(repsVal) || 0;
+                                const estOneRm = !ex.isCardio
+                                  ? calculateEstimated1RM(numericWeight, numericReps)
+                                  : 0;
+                                const prevBestOneRm = getBestOneRmForExercise(
+                                  user,
+                                  ex.id,
+                                  ex.isCardio
+                                );
+                                const beatOneRm =
+                                  !ex.isCardio &&
+                                  estOneRm > 0 &&
+                                  estOneRm > prevBestOneRm;
+
+                                if (beatOneRm) {
+                                  const isAchievement = prevBestOneRm > 0;
+                                  isOneRmPR = isAchievement;
+                                  onRecordOneRM({
+                                    exId: ex.id,
+                                    exerciseName: ex.name,
+                                    newOneRm: estOneRm,
+                                    prevOneRm: prevBestOneRm,
+                                    weight: numericWeight,
+                                    reps: numericReps,
+                                    isAchievement,
+                                  });
+                                }
 
                                 if (beatPR || beatPrevious) {
                                   isPR = true;
@@ -812,6 +874,7 @@ export function TrainTab({
                                                 reps: repsVal,
                                                 done: nextDone,
                                                 isPR,
+                                                isOneRmPR,
                                               }
                                         ),
                                       }
@@ -835,6 +898,47 @@ export function TrainTab({
                           >
                             ✓
                           </button>
+                          </div>
+                          {!ex.isCardio && liveOneRm > 0 && (
+                            <div className="flex items-center justify-between gap-2 px-2 pt-1 pb-0.5 mt-1 border-t border-[#1B1E26]/60 text-[11px] tabular-nums">
+                              <span className="text-[#8A92A2]">
+                                1RM est.:{' '}
+                                <strong
+                                  className={
+                                    beatsOneRmNow || (s.done && s.isOneRmPR)
+                                      ? 'text-[#FACC15]'
+                                      : 'text-[#F1F5F9]'
+                                  }
+                                >
+                                  {liveOneRm} kg
+                                </strong>
+                              </span>
+                              {s.done && s.isOneRmPR ? (
+                                <span className="font-black text-[#FACC15]">
+                                  🏅 ¡Logro 1RM!
+                                </span>
+                              ) : bestOneRm > 0 ? (
+                                <span
+                                  className={
+                                    beatsOneRmNow
+                                      ? 'font-bold text-[#22C55E]'
+                                      : 'text-[#8A92A2]'
+                                  }
+                                >
+                                  {beatsOneRmNow
+                                    ? `▲ +${
+                                        Math.round((liveOneRm - bestOneRm) * 10) /
+                                        10
+                                      } kg sobre récord`
+                                    : `Récord 1RM: ${bestOneRm} kg`}
+                                </span>
+                              ) : (
+                                <span className="text-[#38BDF8] font-semibold">
+                                  1RM base
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -1230,6 +1334,8 @@ export function TrainTab({
                   {summaryInfo.completedSets} series completadas ·{' '}
                   {summaryInfo.totalVolume} pts de volumen ·{' '}
                   {summaryInfo.prCount} nuevos PRs
+                  {(summaryInfo.oneRmRecordCount || 0) > 0 &&
+                    ` · ${summaryInfo.oneRmRecordCount} logros de 1RM`}
                 </div>
                 {summaryInfo.newLevel > summaryInfo.prevLevel && (
                   <div className="mt-3 px-3.5 py-2.5 rounded-xl bg-[#38BDF8]/12 border border-[#38BDF8]/50 text-sm font-extrabold text-[#38BDF8] tabular-nums">

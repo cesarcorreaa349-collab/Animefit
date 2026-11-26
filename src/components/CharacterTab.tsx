@@ -4,6 +4,7 @@ import { UserProfile } from '../types/animefit';
 import {
   TRAINING_STYLE_OPTIONS,
   formatDuration,
+  getAllOneRmRecordEntries,
   getCharacterStage,
   getExerciseById,
   getLevelInfo,
@@ -88,6 +89,10 @@ export function CharacterTab({
   const st = getCharacterStage(user.charId, lv.level);
   const ch = st.char;
   const prs = Object.entries(user.prs || {});
+  const oneRmMap = getAllOneRmRecordEntries(user);
+  const recordExIds = Array.from(
+    new Set([...Object.keys(user.prs || {}), ...Object.keys(oneRmMap)])
+  );
   const history = (user.history || []).slice().reverse().slice(0, 10);
   const todayWellness = getTodayWellnessLog(user);
 
@@ -248,17 +253,19 @@ export function CharacterTab({
         <div className="lg:col-span-6 flex flex-col gap-5">
           <section className="bg-[#0A0B0F] border border-[#1B1E26] rounded-2xl p-4 sm:p-5">
             <h3 className="text-base font-extrabold text-[#F1F5F9] mb-3">
-              Récords Personales (PRs)
+              Récords Personales (PRs) y 1RM
             </h3>
-            {prs.length === 0 ? (
+            {recordExIds.length === 0 ? (
               <p className="text-sm text-[#8A92A2]">
-                Completa series en tus entrenamientos para registrar tus primeros PRs.
+                Completa series en tus entrenamientos para registrar tus primeros PRs y 1RM estimado.
               </p>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {prs.map(([exId, val]) => {
+                {recordExIds.map((exId) => {
                   const ex = getExerciseById(exId, user);
                   if (!ex) return null;
+                  const val = user.prs?.[exId];
+                  const oneRm = oneRmMap[exId] || 0;
                   const unit = ex.isCardio
                     ? 'min'
                     : ex.isBodyweight
@@ -272,9 +279,18 @@ export function CharacterTab({
                       <span className="text-xs font-bold text-[#F1F5F9] line-clamp-2">
                         {ex.name}
                       </span>
-                      <span className="text-xs font-black text-[#FACC15] whitespace-nowrap shrink-0 tabular-nums">
-                        {val} {unit}
-                      </span>
+                      <div className="text-right whitespace-nowrap shrink-0 tabular-nums">
+                        {typeof val === 'number' && val > 0 && (
+                          <div className="text-xs font-black text-[#FACC15]">
+                            {val} {unit}
+                          </div>
+                        )}
+                        {!ex.isCardio && oneRm > 0 && (
+                          <div className="text-[11px] font-bold text-[#38BDF8]">
+                            1RM: {oneRm} kg
+                          </div>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
