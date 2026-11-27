@@ -1304,28 +1304,6 @@ export function formatDuration(ms: number): string {
   return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
-export function beepRestDone(): void {
-  try {
-    const AudioCtx =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext: typeof AudioContext })
-        .webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(880, ctx.currentTime);
-    gain.gain.setValueAtTime(0.15, ctx.currentTime);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.25);
-  } catch {
-    // ignore audio restrictions
-  }
-}
-
 let sharedPvpAudioCtx: AudioContext | null = null;
 
 function getPvpAudioContext(): AudioContext | null {
@@ -1349,6 +1327,68 @@ export function unlockPvpAudio(): void {
     }
   } catch {
     // ignore mobile WebAudio restrictions cleanly
+  }
+}
+
+export const unlockRestAudio = unlockPvpAudio;
+
+function playAnimeRestSequence(ctx: AudioContext): void {
+  const now = ctx.currentTime;
+
+  // Energetic ascending anime aura sweep
+  const sweep = ctx.createOscillator();
+  const sweepGain = ctx.createGain();
+  sweep.type = 'triangle';
+  sweep.frequency.setValueAtTime(330, now);
+  sweep.frequency.exponentialRampToValueAtTime(660, now + 0.11);
+  sweep.frequency.exponentialRampToValueAtTime(990, now + 0.22);
+  sweepGain.gain.setValueAtTime(0.001, now);
+  sweepGain.gain.linearRampToValueAtTime(0.075, now + 0.025);
+  sweepGain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+  sweep.connect(sweepGain);
+  sweepGain.connect(ctx.destination);
+  sweep.start(now);
+  sweep.stop(now + 0.25);
+
+  // Crisp rising two-chime anime ready signal (E5 -> B5 -> E6)
+  const notes = [
+    { freq: 659.25, start: 0.08, dur: 0.14, peak: 0.07 },
+    { freq: 987.77, start: 0.16, dur: 0.16, peak: 0.075 },
+    { freq: 1318.51, start: 0.24, dur: 0.22, peak: 0.085 },
+  ];
+  for (const n of notes) {
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(n.freq, now + n.start);
+    g.gain.setValueAtTime(0.001, now + n.start);
+    g.gain.linearRampToValueAtTime(n.peak, now + n.start + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.001, now + n.start + n.dur);
+    osc.connect(g);
+    g.connect(ctx.destination);
+    osc.start(now + n.start);
+    osc.stop(now + n.start + n.dur + 0.01);
+  }
+}
+
+export function beepRestDone(): void {
+  try {
+    const ctx = getPvpAudioContext();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') {
+      void ctx
+        .resume()
+        .then(() => {
+          playAnimeRestSequence(ctx);
+        })
+        .catch(() => {
+          // ignore mobile WebAudio restrictions
+        });
+      return;
+    }
+    playAnimeRestSequence(ctx);
+  } catch {
+    // ignore audio restrictions
   }
 }
 

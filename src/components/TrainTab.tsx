@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
+  ArrowUp,
   Check,
   ChevronRight,
   Folder,
@@ -11,7 +12,10 @@ import {
   Pencil,
   Play,
   Plus,
+  Timer,
   Trash2,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import {
   ActiveWorkout,
@@ -34,6 +38,7 @@ import {
   getExerciseById,
   getLastExerciseSetsHistory,
   reorderArrayItem,
+  unlockRestAudio,
 } from '../utils/animefit';
 import { PedometerStatus } from '../hooks/useAutoPedometer';
 import { CharacterAvatar } from './CharacterAvatar';
@@ -219,18 +224,77 @@ export function TrainTab({
   const [moveRoutineId, setMoveRoutineId] = useState<string | null>(null);
   const [aiFolderId, setAiFolderId] = useState<string>('');
 
+  const [restSoundEnabled, setRestSoundEnabled] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem('animefit_rest_sound_v1') !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const restSoundEnabledRef = useRef(restSoundEnabled);
+  restSoundEnabledRef.current = restSoundEnabled;
+
+  const restHeaderRef = useRef<HTMLDivElement | null>(null);
+  const [isRestHeaderVisible, setIsRestHeaderVisible] = useState(true);
+  const lastBeepedRestEndRef = useRef<number | null>(null);
+
+  const toggleRestSound = () => {
+    setRestSoundEnabled((prev) => {
+      const next = !prev;
+      if (next) unlockRestAudio();
+      try {
+        window.localStorage.setItem('animefit_rest_sound_v1', next ? '1' : '0');
+      } catch {
+        // ignore storage errors
+      }
+      return next;
+    });
+  };
+
+  // Observe whether the top active timer card is visible in viewport
+  useEffect(() => {
+    if (!activeWorkout) {
+      setIsRestHeaderVisible(true);
+      return;
+    }
+    const el = restHeaderRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setIsRestHeaderVisible(entry.isIntersecting);
+      },
+      {
+        root: null,
+        threshold: 0.05,
+        rootMargin: '-56px 0px 0px 0px',
+      }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [activeWorkout?.startedAt]);
+
   // Live timer tick for active workout + rest countdown
   useEffect(() => {
-    if (!activeWorkout) return;
+    if (!activeWorkout) {
+      lastBeepedRestEndRef.current = null;
+      return;
+    }
     const id = window.setInterval(() => {
       const current = Date.now();
       setNow(current);
-      if (activeWorkout.restEndAt && activeWorkout.restEndAt <= current) {
+      if (
+        activeWorkout.restEndAt &&
+        activeWorkout.restEndAt <= current &&
+        lastBeepedRestEndRef.current !== activeWorkout.restEndAt
+      ) {
+        lastBeepedRestEndRef.current = activeWorkout.restEndAt;
         onUpdateActiveWorkout((prev) => ({ ...prev, restEndAt: null }));
         onToast('⏰ ¡Descanso terminado! A por la siguiente serie.');
-        beepRestDone();
+        if (restSoundEnabledRef.current) {
+          beepRestDone();
+        }
       }
-    }, 500);
+    }, 400);
     return () => window.clearInterval(id);
   }, [activeWorkout, onToast, onUpdateActiveWorkout]);
 
@@ -439,14 +503,25 @@ export function TrainTab({
       (acc, ex) => acc + ex.sets.length,
       0
     );
-    const restRemaining =
+    const isRestActive = Boolean(
       activeWorkout.restEndAt && activeWorkout.restEndAt > now
-        ? formatDuration(activeWorkout.restEndAt - now)
-        : 'Listo';
+    );
+    const restMsLeft = isRestActive && activeWorkout.restEndAt
+      ? Math.max(0, activeWorkout.restEndAt - now)
+      : 0;
+    const restRemaining = isRestActive ? formatDuration(restMsLeft) : 'Listo';
+    const restTotalMs = Math.max(1000, (activeWorkout.restDuration || 90) * 1000);
+    const restPct = isRestActive
+      ? Math.min(100, Math.max(0, Math.round((restMsLeft / restTotalMs) * 100)))
+      : 0;
+    const showFloatingRestBar = isRestActive && !isRestHeaderVisible;
 
     return (
-      <div className="flex flex-col gap-4">
-        <div className="sticky top-[57px] z-20 bg-gradient-to-r from-[#0A0B0F] to-[#0E1016] border border-[#38BDF8]/45 rounded-2xl p-3.5 shadow-xl flex flex-wrap items-center justify-between gap-3">
+      <div className={`flex flex-col gap-4 ${showFloatingRestBar ? 'pb-16' : ''}`}>
+        <div
+          ref={restHeaderRef}
+          className="bg-gradient-to-r from-[#0A0B0F] to-[#0E1016] border border-[#38BDF8]/45 rounded-2xl p-3.5 shadow-xl flex flex-wrap items-center justify-between gap-3"
+        >
           <div>
             <div className="text-[11px] font-bold text-[#8A92A2] tabular-nums">
               ⏱️ Tiempo activo · {doneSets}/{totalSets} series
@@ -461,9 +536,7 @@ export function TrainTab({
               Descanso:{' '}
               <span
                 className={`font-black ${
-                  activeWorkout.restEndAt && activeWorkout.restEndAt > now
-                    ? 'text-[#38BDF8]'
-                    : 'text-[#8A92A2]'
+                  isRestActive ? 'text-[#38BDF8]' : 'text-[#8A92A2]'
                 }`}
               >
                 {restRemaining}
@@ -478,18 +551,45 @@ export function TrainTab({
                 <button
                   key={btn.sec}
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    if (restSoundEnabled) unlockRestAudio();
+                    lastBeepedRestEndRef.current = null;
                     onUpdateActiveWorkout((prev) => ({
                       ...prev,
                       restDuration: btn.sec,
                       restEndAt: Date.now() + btn.sec * 1000,
-                    }))
-                  }
+                    }));
+                  }}
                   className="min-h-[34px] px-2.5 rounded-lg bg-[#101218] border border-[#1B1E26] text-xs font-bold text-[#F1F5F9] hover:border-[#38BDF8]"
                 >
                   {btn.label}
                 </button>
               ))}
+              <button
+                type="button"
+                aria-label={
+                  restSoundEnabled
+                    ? 'Silenciar aviso de descanso'
+                    : 'Activar sonido de descanso'
+                }
+                title={
+                  restSoundEnabled
+                    ? 'Sonido de descanso activado'
+                    : 'Sonido de descanso silenciado'
+                }
+                onClick={toggleRestSound}
+                className={`min-h-[34px] min-w-[34px] px-2 rounded-lg border inline-flex items-center justify-center transition-colors ${
+                  restSoundEnabled
+                    ? 'bg-[#38BDF8]/15 border-[#38BDF8]/40 text-[#38BDF8]'
+                    : 'bg-[#101218] border-[#1B1E26] text-[#8A92A2]'
+                }`}
+              >
+                {restSoundEnabled ? (
+                  <Volume2 className="w-3.5 h-3.5" />
+                ) : (
+                  <VolumeX className="w-3.5 h-3.5" />
+                )}
+              </button>
               <button
                 type="button"
                 aria-label="Detener descanso"
@@ -904,6 +1004,11 @@ export function TrainTab({
                                 }
                               }
 
+                              if (nextDone) {
+                                if (restSoundEnabled) unlockRestAudio();
+                                lastBeepedRestEndRef.current = null;
+                              }
+
                               onUpdateActiveWorkout((prevW) => {
                                 const nextEx = prevW.exercises.map((exItem, i) =>
                                   i !== exIdx
@@ -1081,6 +1186,87 @@ export function TrainTab({
             </button>
           </div>
         </Modal>
+
+        {/* Compact Floating Rest Timer Bar (only when main timer scrolls out of view) */}
+        {showFloatingRestBar && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="fixed bottom-[72px] md:bottom-5 left-1/2 -translate-x-1/2 z-30 w-[calc(100%-1.5rem)] max-w-md rounded-2xl bg-[#0A0B0F]/95 backdrop-blur-md border border-[#38BDF8]/60 shadow-[0_8px_28px_rgba(0,0,0,0.72)] overflow-hidden"
+          >
+            <div className="px-3 py-2 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  restHeaderRef.current?.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'center',
+                  });
+                }}
+                aria-label="Ir al temporizador principal"
+                className="flex-1 min-w-0 flex items-center gap-2.5 text-left py-0.5 rounded-lg hover:bg-[#101218]/60 transition-colors"
+              >
+                <span className="w-7 h-7 rounded-lg bg-[#38BDF8]/15 border border-[#38BDF8]/40 flex items-center justify-center shrink-0">
+                  <Timer className="w-3.5 h-3.5 text-[#38BDF8] animate-pulse" />
+                </span>
+                <div className="min-w-0 flex items-baseline gap-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wide text-[#8A92A2]">
+                    Descanso
+                  </span>
+                  <span className="text-base font-black text-[#38BDF8] tabular-nums font-[family-name:var(--font-mono)]">
+                    {restRemaining}
+                  </span>
+                </div>
+                <span className="ml-auto inline-flex items-center gap-0.5 text-[10px] font-bold text-[#8A92A2] shrink-0">
+                  <ArrowUp className="w-3 h-3 text-[#38BDF8]" />
+                  Subir
+                </span>
+              </button>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  aria-label={
+                    restSoundEnabled
+                      ? 'Silenciar aviso de descanso'
+                      : 'Activar sonido de descanso'
+                  }
+                  onClick={toggleRestSound}
+                  className={`min-h-[34px] min-w-[34px] px-2 rounded-lg border inline-flex items-center justify-center transition-colors ${
+                    restSoundEnabled
+                      ? 'bg-[#38BDF8]/15 border-[#38BDF8]/40 text-[#38BDF8]'
+                      : 'bg-[#101218] border-[#1B1E26] text-[#8A92A2]'
+                  }`}
+                >
+                  {restSoundEnabled ? (
+                    <Volume2 className="w-3.5 h-3.5" />
+                  ) : (
+                    <VolumeX className="w-3.5 h-3.5" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  aria-label="Cancelar descanso"
+                  onClick={() =>
+                    onUpdateActiveWorkout((prev) => ({
+                      ...prev,
+                      restEndAt: null,
+                    }))
+                  }
+                  className="min-h-[34px] min-w-[34px] px-2 rounded-lg bg-[#EF4444]/15 border border-[#EF4444]/35 text-xs font-bold text-[#FCA5A5] inline-flex items-center justify-center"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div className="h-[2px] w-full bg-[#101218]">
+              <div
+                className="h-full bg-gradient-to-r from-[#38BDF8] to-[#FACC15] transition-all duration-300"
+                style={{ width: `${restPct}%` }}
+              />
+            </div>
+          </div>
+        )}
 
         {renderSharedModals()}
       </div>
