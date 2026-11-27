@@ -4,9 +4,146 @@ import { ActiveWorkout, UserProfile } from '../types/animefit';
 export const INACTIVITY_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 
 const LOCAL_KEY = 'animefit_reminder_state_v1';
+const INAPP_DISMISS_KEY = 'animefit_inapp_reminder_dismissed_v1';
 const REMINDER_DB_NAME = 'animefit-reminder-db';
 const REMINDER_STORE_NAME = 'state';
 const REMINDER_RECORD_KEY = 'current';
+
+export interface NotificationEnvDiagnostics {
+  supported: boolean;
+  isSecureContext: boolean;
+  hasWindowNotification: boolean;
+  hasServiceWorker: boolean;
+  hasSwShowNotification: boolean;
+  isIOS: boolean;
+  isAndroid: boolean;
+  isAndroidWebView: boolean;
+  isStandalone: boolean;
+  unsupportedReason: string | null;
+}
+
+export function getNotificationEnvironmentDiagnostics(): NotificationEnvDiagnostics {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    return {
+      supported: false,
+      isSecureContext: false,
+      hasWindowNotification: false,
+      hasServiceWorker: false,
+      hasSwShowNotification: false,
+      isIOS: false,
+      isAndroid: false,
+      isAndroidWebView: false,
+      isStandalone: false,
+      unsupportedReason: 'Entorno sin ventana de navegador.',
+    };
+  }
+
+  const ua = navigator.userAgent.toLowerCase();
+  const isIOS =
+    /iphone|ipad|ipod/.test(ua) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isAndroid = /android/.test(ua);
+  const isAndroidWebView =
+    isAndroid && (/\bwv\b/.test(ua) || /; wv\)/.test(ua) || !/chrome|firefox|edg|opr|brave/.test(ua));
+  const isStandalone =
+    window.matchMedia?.('(display-mode: standalone)').matches ||
+    (navigator as unknown as { standalone?: boolean }).standalone === true;
+
+  const isSecureContext = window.isSecureContext !== false;
+  let hasWindowNotification = false;
+  try {
+    hasWindowNotification =
+      'Notification' in window &&
+      typeof window.Notification !== 'undefined' &&
+      typeof window.Notification.requestPermission === 'function';
+  } catch {
+    hasWindowNotification = false;
+  }
+
+  const hasServiceWorker = 'serviceWorker' in navigator;
+  let hasSwShowNotification = false;
+  try {
+    hasSwShowNotification =
+      hasServiceWorker &&
+      typeof ServiceWorkerRegistration !== 'undefined' &&
+      'showNotification' in ServiceWorkerRegistration.prototype;
+  } catch {
+    hasSwShowNotification = false;
+  }
+
+  const supported = isSecureContext && hasWindowNotification;
+
+  let unsupportedReason: string | null = null;
+  if (!supported) {
+    if (!isSecureContext) {
+      unsupportedReason =
+        'Conexión no segura (window.isSecureContext = false). Abre AnimeFit por HTTPS.';
+    } else if (isIOS && !isStandalone) {
+      unsupportedReason =
+        'Safari en iOS no expone window.Notification fuera de la app instalada en Pantalla de inicio.';
+    } else if (isAndroidWebView) {
+      unsupportedReason =
+        'El WebView del .apk Android no expone la API web window.Notification.';
+    } else if (!hasWindowNotification) {
+      unsupportedReason = hasSwShowNotification
+        ? 'Falta el constructor window.Notification en este navegador.'
+        : 'Este navegador/WebView no expone window.Notification ni notificaciones del sistema.';
+    }
+  }
+
+  return {
+    supported,
+    isSecureContext,
+    hasWindowNotification,
+    hasServiceWorker,
+    hasSwShowNotification,
+    isIOS,
+    isAndroid,
+    isAndroidWebView,
+    isStandalone,
+    unsupportedReason,
+  };
+}
+
+function safeReadNotificationPermission(): NotificationPermission | 'unsupported' {
+  if (
+    typeof window === 'undefined' ||
+    window.isSecureContext === false ||
+    !('Notification' in window)
+  ) {
+    return 'unsupported';
+  }
+  try {
+    return window.Notification.permission;
+  } catch {
+    return 'unsupported';
+  }
+}
+
+async function ensureServiceWorkerRegistered(): Promise<ServiceWorkerRegistration | null> {
+  if (
+    typeof window === 'undefined' ||
+    typeof navigator === 'undefined' ||
+    window.isSecureContext === false ||
+    !('serviceWorker' in navigator)
+  ) {
+    return null;
+  }
+  try {
+    const existing = await navigator.serviceWorker.getRegistration();
+    if (existing) return existing;
+    return await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+  } catch {
+    try {
+      return await Promise.race<ServiceWorkerRegistration | null>([
+        navigator.serviceWorker.ready,
+        new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 1200)),
+      ]);
+    } catch {
+      return null;
+    }
+  }
+}
 
 interface ReminderPersistedState {
   enabled: boolean;
@@ -159,19 +296,13 @@ async function showNotificationThroughPWA(
   title: string,
   body: string
 ): Promise<boolean> {
-  if (
-    typeof window === 'undefined' ||
-    !('Notification' in window) ||
-    window.isSecureContext === false
-  ) {
-    return false;
-  }
-  if (Notification.permission !== 'granted') {
+  if (safeReadNotificationPermission() !== 'granted') {
     return false;
   }
 
   if ('serviceWorker' in navigator) {
     try {
+      await ensureServiceWorkerRegistered();
       const reg = await Promise.race<ServiceWorkerRegistration | null>([
         navigator.serviceWorker.ready,
         new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 1500)),
@@ -214,18 +345,25 @@ export function useInactivityNotifications({
   activeWorkout,
   onNotify,
 }: UseInactivityNotificationsOptions) {
-  const supported =
-    typeof window !== 'undefined' &&
-    'Notification' in window &&
-    window.isSecureContext !== false;
+  const diagnostics = useMemo(() => getNotificationEnvironmentDiagnostics(), []);
+  const supported = diagnostics.supported;
 
   const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>(() =>
-    supported ? Notification.permission : 'unsupported'
+    supported ? safeReadNotificationPermission() : 'unsupported'
   );
   const [persisted, setPersisted] = useState<ReminderPersistedState>(() =>
     readLocalReminderState()
   );
   const [periodicSyncActive, setPeriodicSyncActive] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [dismissedDateKey, setDismissedDateKey] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      return window.localStorage.getItem(INAPP_DISMISS_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
 
   const prevUserMetricsRef = useRef<{
     username: string;
@@ -244,7 +382,7 @@ export function useInactivityNotifications({
       setPermission('unsupported');
       return 'unsupported';
     }
-    const current = Notification.permission;
+    const current = safeReadNotificationPermission();
     setPermission(current);
     return current;
   }, [supported]);
@@ -255,7 +393,7 @@ export function useInactivityNotifications({
       setPermission('unsupported');
       return;
     }
-    const syncPerm = () => setPermission(Notification.permission);
+    const syncPerm = () => setPermission(safeReadNotificationPermission());
     syncPerm();
     document.addEventListener('visibilitychange', syncPerm);
     window.addEventListener('focus', syncPerm);
@@ -309,9 +447,7 @@ export function useInactivityNotifications({
     const fallbackInitMs =
       nextActivityAt > 0
         ? nextActivityAt
-        : persisted.enabled
-        ? Date.now()
-        : 0;
+        : Date.now();
 
     if (
       fallbackInitMs !== persisted.lastActivityAt ||
@@ -324,6 +460,19 @@ export function useInactivityNotifications({
       });
     }
   }, [user, activeWorkout, persisted, persistAll]);
+
+  // Keep clock fresh so 24h in-app fallback & hoursSinceActivity update when app stays open or resumes
+  useEffect(() => {
+    const updateNow = () => setNowMs(Date.now());
+    const id = window.setInterval(updateNow, 60 * 1000);
+    document.addEventListener('visibilitychange', updateNow);
+    window.addEventListener('focus', updateNow);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', updateNow);
+      window.removeEventListener('focus', updateNow);
+    };
+  }, []);
 
   // Register Periodic Background Sync on PWA if supported & enabled
   useEffect(() => {
@@ -465,7 +614,8 @@ export function useInactivityNotifications({
       return 'unsupported';
     }
 
-    let currentPerm = Notification.permission;
+    await ensureServiceWorkerRegistered();
+    let currentPerm = safeReadNotificationPermission();
     if (currentPerm === 'default') {
       currentPerm = await requestBrowserNotificationPermission();
     }
@@ -495,7 +645,7 @@ export function useInactivityNotifications({
       return;
     }
 
-    if (persisted.enabled && Notification.permission === 'granted') {
+    if (persisted.enabled && safeReadNotificationPermission() === 'granted') {
       const next: ReminderPersistedState = {
         ...persisted,
         enabled: false,
@@ -520,11 +670,14 @@ export function useInactivityNotifications({
   const sendTestNotification = useCallback(async () => {
     if (!supported) {
       setPermission('unsupported');
-      onNotify?.('Tu navegador no soporta notificaciones locales.');
+      onNotify?.(
+        '⚡ Aviso interno 24h activo: si pasas 24h sin entrenar verás el recordatorio dentro de AnimeFit.'
+      );
       return;
     }
 
-    let currentPerm = Notification.permission;
+    await ensureServiceWorkerRegistered();
+    let currentPerm = safeReadNotificationPermission();
     if (currentPerm === 'default') {
       currentPerm = await requestBrowserNotificationPermission();
     }
@@ -548,23 +701,46 @@ export function useInactivityNotifications({
     if (ok) {
       onNotify?.('Notificación de prueba enviada.');
     } else {
-      onNotify?.('No se pudo mostrar la notificación en este navegador.');
+      onNotify?.('No se pudo mostrar la notificación del sistema en este navegador. El aviso interno 24h sigue activo.');
     }
   }, [supported, user, onNotify]);
 
   const hoursSinceActivity = useMemo(() => {
     if (!persisted.lastActivityAt) return null;
-    const diff = Math.max(0, Date.now() - persisted.lastActivityAt);
+    const diff = Math.max(0, nowMs - persisted.lastActivityAt);
     return Math.floor(diff / (60 * 60 * 1000));
-  }, [persisted.lastActivityAt]);
+  }, [persisted.lastActivityAt, nowMs]);
+
+  const isInactive24h = Boolean(
+    user &&
+      persisted.lastActivityAt > 0 &&
+      nowMs - persisted.lastActivityAt >= INACTIVITY_THRESHOLD_MS
+  );
+
+  const inAppAlertDismissedToday =
+    dismissedDateKey === getTodayDateKey(new Date(nowMs));
+
+  const dismissInAppAlert = useCallback(() => {
+    const todayKey = getTodayDateKey();
+    setDismissedDateKey(todayKey);
+    try {
+      window.localStorage.setItem(INAPP_DISMISS_KEY, todayKey);
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
 
   return {
     supported,
+    unsupportedReason: diagnostics.unsupportedReason,
     permission,
     enabled: persisted.enabled && permission === 'granted',
     periodicSyncActive,
     lastActivityAt: persisted.lastActivityAt || null,
     hoursSinceActivity,
+    isInactive24h,
+    inAppAlertDismissedToday,
+    dismissInAppAlert,
     requestNotificationPermission,
     refreshPermission,
     toggleNotifications,

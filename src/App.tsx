@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Bell,
   BookOpen,
   Dumbbell,
   HelpCircle,
@@ -1696,6 +1697,46 @@ export default function App() {
       </header>
 
       <main className="relative z-10 max-w-5xl mx-auto px-4 py-5">
+        {inactivityReminder.isInactive24h &&
+          !inactivityReminder.inAppAlertDismissedToday &&
+          !activeWorkout && (
+            <div
+              role="status"
+              className="mb-4 rounded-2xl border border-[#FACC15]/45 bg-gradient-to-r from-[#0A0B0F] via-[#12151E] to-[#0A0B0F] px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg"
+            >
+              <div className="flex items-start gap-2.5 min-w-0">
+                <Bell className="w-4 h-4 text-[#FACC15] shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <div className="text-xs font-extrabold text-[#FACC15]">
+                    ⚡ ¡{currentUser.username}, llevas{' '}
+                    {inactivityReminder.hoursSinceActivity ?? 24} h sin actividad!
+                  </div>
+                  <p className="text-xs text-[#CBD5E1] mt-0.5 leading-snug">
+                    Pasaron más de 24 horas desde tu último registro. Completa una rutina o suma actividad hoy para mantener tu racha.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                {mainTab !== 'entrenar' && (
+                  <button
+                    type="button"
+                    onClick={() => setMainTab('entrenar')}
+                    className="min-h-[34px] px-3 rounded-lg bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] text-xs font-bold whitespace-nowrap"
+                  >
+                    Ir a Entrenar
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={inactivityReminder.dismissInAppAlert}
+                  className="min-h-[34px] px-3 rounded-lg bg-[#101218] border border-[#1B1E26] text-xs font-bold text-[#8A92A2] hover:text-[#F1F5F9] whitespace-nowrap"
+                >
+                  Luego
+                </button>
+              </div>
+            </div>
+          )}
+
         {mainTab === 'entrenar' && (
           <TrainTab
             user={currentUser}

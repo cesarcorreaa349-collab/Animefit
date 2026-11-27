@@ -6,6 +6,7 @@ import {
   RefreshCw,
   ShieldAlert,
 } from 'lucide-react';
+import { getNotificationEnvironmentDiagnostics } from '../hooks/useInactivityNotifications';
 
 interface NotificationSettingsCardProps {
   supported: boolean;
@@ -46,6 +47,7 @@ export function NotificationSettingsCard({
   onTestReminder,
   variant = 'card',
 }: NotificationSettingsCardProps) {
+  const envDiag = getNotificationEnvironmentDiagnostics();
   const { isIOS, isAndroid, isStandalone } = getPlatformHints();
 
   const statusMeta = !supported
@@ -104,12 +106,12 @@ export function NotificationSettingsCard({
             Recordatorio 24h:{' '}
             <strong className="text-[#F1F5F9]">
               {!supported
-                ? 'No disponible'
+                ? 'Aviso en la app (activo)'
                 : permission !== 'granted'
-                ? 'Requiere permiso'
+                ? 'Requiere permiso · Aviso en app activo'
                 : enabled
-                ? 'Activo'
-                : 'Pausado'}
+                ? 'Activo (sistema + app)'
+                : 'Solo aviso en app'}
             </strong>
           </span>
         </div>
@@ -130,20 +132,25 @@ export function NotificationSettingsCard({
       {!supported && (
         <div className="rounded-xl bg-[#101218] border border-[#1B1E26] p-3 text-xs text-[#8A92A2] leading-relaxed flex items-start gap-2.5">
           <AlertTriangle className="w-4 h-4 text-[#F59E0B] shrink-0 mt-0.5" />
-          <div>
-            <strong className="text-[#F1F5F9] block mb-0.5">
-              Notificaciones no soportadas en este entorno
+          <div className="space-y-1">
+            <strong className="text-[#F1F5F9] block">
+              Notificaciones del sistema no soportadas en este entorno
             </strong>
+            {envDiag.unsupportedReason && (
+              <p className="text-[11px] text-[#CBD5E1]">
+                Motivo detectado: {envDiag.unsupportedReason}
+              </p>
+            )}
             {isIOS && !isStandalone ? (
-              <span>
+              <p>
                 En iPhone y iPad, Apple solo habilita notificaciones web cuando instalás la app: tocá{' '}
                 <strong className="text-[#F1F5F9]">Compartir → Agregar a pantalla de inicio</strong>{' '}
                 y ábrela desde ese ícono.
-              </span>
+              </p>
             ) : (
-              <span>
-                Este navegador, WebView o conexión no expone la API de notificaciones del sistema. Abrí AnimeFit en Chrome/Brave (HTTPS) o desde la app instalada.
-              </span>
+              <p>
+                Como respaldo automático, AnimeFit mostrará un <strong className="text-[#38BDF8]">aviso visible dentro de la app</strong> si pasan 24 horas sin registrar actividad. Para avisos fuera de la app, ábrela en Chrome/Brave (HTTPS) como PWA instalada.
+              </p>
             )}
           </div>
         </div>
@@ -242,14 +249,19 @@ export function NotificationSettingsCard({
         )}
 
         {!supported && (
-          <button
-            type="button"
-            disabled
-            className="min-h-[40px] flex-1 px-3.5 rounded-xl bg-[#101218] border border-[#1B1E26] text-xs font-bold text-[#8A92A2] opacity-55 cursor-not-allowed inline-flex items-center justify-center gap-1.5"
-          >
-            <BellOff className="w-3.5 h-3.5" />
-            Notificaciones no disponibles
-          </button>
+          <div className="w-full flex flex-wrap items-center gap-2">
+            <span className="min-h-[40px] flex-1 px-3.5 rounded-xl bg-[#101218] border border-[#22C55E]/35 text-xs font-bold text-[#86EFAC] inline-flex items-center justify-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              Aviso interno 24h activo
+            </span>
+            <button
+              type="button"
+              onClick={onTestReminder}
+              className="min-h-[40px] px-3.5 rounded-xl bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-xs font-bold text-[#38BDF8] whitespace-nowrap"
+            >
+              Probar aviso en app
+            </button>
+          </div>
         )}
       </div>
     </section>
