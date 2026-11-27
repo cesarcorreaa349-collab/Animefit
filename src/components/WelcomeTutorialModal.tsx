@@ -54,10 +54,10 @@ const STEPS: TutorialStep[] = [
     id: 'historia',
     tabId: 'historia',
     navLabel: 'Historia',
-    title: 'Historia — Campaña semanal',
+    title: 'Historia — Campaña diaria',
     description:
-      'Enfrenta capítulos y jefes anime cada semana vinculando tu rutina real de entrenamiento para cargar tu Ki.',
-    tip: 'Completa tus sesiones semanales para derrotar al jefe del capítulo y sumar recompensas de XP.',
+      'Enfrenta capítulos y jefes anime (1 capítulo nuevo por día) vinculando tu rutina real de entrenamiento para cargar tu energía.',
+    tip: 'Completa un capítulo diario para derrotar al jefe y sumar recompensas de XP.',
     accentHex: '#38BDF8',
     icon: BookOpen,
   },

@@ -1913,30 +1913,75 @@ export function buildRoutinesFromOnboarding(
   return [...baseRoutines, ...extraRoutines];
 }
 
-export const STORY_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+export const STORY_DAY_MS = 24 * 60 * 60 * 1000;
+export const STORY_WEEK_MS = STORY_DAY_MS;
 
-export function getStoryWeeklyStatus(lastCompletedAt?: string | null): {
+export function getStoryDailyStatus(lastCompletedAt?: string | null): {
   canCompleteNewChapter: boolean;
   remainingMs: number;
   nextAvailableDate: Date | null;
+  elapsedDays: number;
 } {
   if (!lastCompletedAt) {
-    return { canCompleteNewChapter: true, remainingMs: 0, nextAvailableDate: null };
+    return {
+      canCompleteNewChapter: true,
+      remainingMs: 0,
+      nextAvailableDate: null,
+      elapsedDays: 1,
+    };
   }
   const ts = Date.parse(lastCompletedAt);
   if (!Number.isFinite(ts)) {
-    return { canCompleteNewChapter: true, remainingMs: 0, nextAvailableDate: null };
+    return {
+      canCompleteNewChapter: true,
+      remainingMs: 0,
+      nextAvailableDate: null,
+      elapsedDays: 1,
+    };
   }
-  const elapsed = Date.now() - ts;
-  const remainingMs = Math.max(0, STORY_WEEK_MS - elapsed);
+  const nowDate = new Date();
+  const lastDate = new Date(ts);
+  const todayStart = new Date(
+    nowDate.getFullYear(),
+    nowDate.getMonth(),
+    nowDate.getDate()
+  ).getTime();
+  const lastDayStart = new Date(
+    lastDate.getFullYear(),
+    lastDate.getMonth(),
+    lastDate.getDate()
+  ).getTime();
+  const elapsedDays = Math.max(
+    0,
+    Math.floor((todayStart - lastDayStart) / STORY_DAY_MS)
+  );
+  const canCompleteNewChapter =
+    elapsedDays >= 1 || nowDate.getTime() - ts >= STORY_DAY_MS;
+
+  if (canCompleteNewChapter) {
+    return {
+      canCompleteNewChapter: true,
+      remainingMs: 0,
+      nextAvailableDate: null,
+      elapsedDays: Math.max(1, elapsedDays),
+    };
+  }
+
+  const nextMidnight = new Date(
+    nowDate.getFullYear(),
+    nowDate.getMonth(),
+    nowDate.getDate() + 1
+  ).getTime();
+  const remainingMs = Math.max(0, nextMidnight - nowDate.getTime());
   return {
-    canCompleteNewChapter: remainingMs === 0,
+    canCompleteNewChapter: false,
     remainingMs,
-    nextAvailableDate: remainingMs > 0 ? new Date(ts + STORY_WEEK_MS) : null,
+    nextAvailableDate: new Date(nextMidnight),
+    elapsedDays: 0,
   };
 }
 
-export function formatWeeklyCountdown(ms: number): string {
+export function formatDailyCountdown(ms: number): string {
   const totalMin = Math.max(1, Math.ceil(ms / 60000));
   const days = Math.floor(totalMin / (60 * 24));
   const hours = Math.floor((totalMin % (60 * 24)) / 60);
@@ -1946,4 +1991,5 @@ export function formatWeeklyCountdown(ms: number): string {
   return `${mins}m`;
 }
 
-
+export const getStoryWeeklyStatus = getStoryDailyStatus;
+export const formatWeeklyCountdown = formatDailyCountdown;

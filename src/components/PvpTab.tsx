@@ -124,10 +124,10 @@ export function PvpTab({
     (currentUser.history || []).map((h) => h.date)
   );
   const myMaxHp = Math.round(
-    140 +
-      lv.level * 16 +
-      (currentUser.workoutsDone || 0) * 4 +
-      Object.keys(currentUser.prs || {}).length * 6
+    185 +
+      lv.level * 21 +
+      (currentUser.workoutsDone || 0) * 5 +
+      Object.keys(currentUser.prs || {}).length * 8
   );
   const myBaseAtk = Math.round(
     22 + lv.level * 4 + Math.min(26, (currentUser.workoutsDone || 0) * 1.4)

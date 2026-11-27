@@ -1069,8 +1069,8 @@ export const STORY_CHAPTERS: StoryChapter[] = SAGAS.flatMap((saga) =>
     const number = (saga.sagaIndex - 1) * 10 + (idxInSaga + 1);
     const id = ch.id || `ch_${String(number).padStart(3, '0')}`;
     const minLevel = Math.max(1, Math.floor((number - 1) * 0.45) + 1);
-    const bossHp = Math.round(110 + (number - 1) * 9.5);
-    const bossAtk = Math.round(14 + (number - 1) * 0.85);
+    const bossHp = Math.round(145 + (number - 1) * 12.4);
+    const bossAtk = Math.round(13 + (number - 1) * 0.76);
     const xpReward = 100 + (number - 1) * 10;
 
     return {
@@ -1131,7 +1131,7 @@ export const STORY_CHAPTERS: StoryChapter[] = SAGAS.flatMap((saga) =>
           ],
         },
       ],
-      victoryText: `¡Capítulo ${number} conquistado! Tu aura de {STAGE} supera al rival y sumas +${xpReward} XP semanales.`,
+      victoryText: `¡Capítulo ${number} conquistado! Tu aura de {STAGE} supera al rival y sumas +${xpReward} XP diarios.`,
       defeatText: `Necesitas más poder para el Capítulo ${number}. Registra series en el gimnasio para subir tu nivel y vuelve a intentarlo.`,
     };
   })

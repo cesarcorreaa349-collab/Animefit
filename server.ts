@@ -645,7 +645,7 @@ function buildFighterState(seed: FighterSeed): PvpFighterState {
   const moveset = getCharacterPhaseMoveset(charId, level, seed.stageName);
   const bonus = computeTrainingPvpBonus(workoutsDone, historyDates);
 
-  const maxHp = Math.round(140 + level * 16 + workoutsDone * 4 + prsCount * 6);
+  const maxHp = Math.round(185 + level * 21 + workoutsDone * 5 + prsCount * 8);
   const baseAtk = Math.round(22 + level * 4 + Math.min(26, workoutsDone * 1.4));
   const critChance = Math.min(0.45, 0.16 + prsCount * 0.015);
 
@@ -2328,7 +2328,7 @@ async function startServer() {
         if (action === 'strike') {
           const isCrit = Math.random() < attacker.critChance;
           const rawDmg = Math.round(
-            attacker.baseAtk * (0.9 + Math.random() * 0.25) * (isCrit ? 1.5 : 1)
+            attacker.baseAtk * (0.75 + Math.random() * 0.2) * (isCrit ? 1.4 : 1)
           );
           const wasGuarding = defender.guarding;
           const guardMult = wasGuarding ? 0.35 : 1;
@@ -2346,7 +2346,7 @@ async function startServer() {
             : `👊 ${attackerMoveset.physical.name}: -${dmg} HP (+30% ${attackerEnergy.shortName})`;
 
           if (wasGuarding) {
-            const counter = Math.round(defender.baseAtk * 0.5);
+            const counter = Math.round(defender.baseAtk * 0.42);
             attacker.hp = Math.max(0, attacker.hp - counter);
             match.damageDealt[defender.username] =
               (match.damageDealt[defender.username] || 0) + counter;

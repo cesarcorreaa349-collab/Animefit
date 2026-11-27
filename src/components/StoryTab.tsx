@@ -22,14 +22,16 @@ import {
   UserProfile,
 } from '../types/animefit';
 import {
-  formatWeeklyCountdown,
+  formatDailyCountdown,
   getCharacterById,
   getCharacterStage,
   getExerciseById,
   getLevelInfo,
-  getStoryWeeklyStatus,
+  getStoryDailyStatus,
 } from '../utils/animefit';
 import { CharacterAvatar } from './CharacterAvatar';
+
+const STORY_SPECIAL_COST = 40;
 
 interface StoryTabProps {
   user: UserProfile;
@@ -82,7 +84,7 @@ export function StoryTab({
     return validRoutines[0];
   }, [validRoutines, user.storyRoutineId]);
 
-  const weeklyStatus = getStoryWeeklyStatus(story.lastChapterCompletedAt);
+  const dailyStatus = getStoryDailyStatus(story.lastChapterCompletedAt);
 
   // Determine the next sequential chapter index
   const nextChapterIndex = useMemo(() => {
@@ -110,9 +112,9 @@ export function StoryTab({
   const [earnedXpThisRun, setEarnedXpThisRun] = useState<number>(0);
 
   // Battle state
-  const [playerHp, setPlayerHp] = useState(120);
-  const [bossHp, setBossHp] = useState(110);
-  const [aura, setAura] = useState(35);
+  const [playerHp, setPlayerHp] = useState(160);
+  const [bossHp, setBossHp] = useState(145);
+  const [aura, setAura] = useState(30);
   const [guarding, setGuarding] = useState(false);
   const [turnBusy, setTurnBusy] = useState(false);
   const [bossCharging, setBossCharging] = useState(false);
@@ -134,10 +136,10 @@ export function StoryTab({
   const playerMaxHp = useMemo(
     () =>
       Math.round(
-        115 +
-          lv.level * 14 +
-          (user.workoutsDone || 0) * 4 +
-          Object.keys(user.prs || {}).length * 6
+        150 +
+          lv.level * 18 +
+          (user.workoutsDone || 0) * 5 +
+          Object.keys(user.prs || {}).length * 8
       ),
     [lv.level, user.workoutsDone, user.prs]
   );
@@ -177,10 +179,10 @@ export function StoryTab({
     const alreadyDone = story.completedChapters.includes(ch.id);
     const prevDone =
       idx === 0 || story.completedChapters.includes(STORY_CHAPTERS[idx - 1].id);
-    const weeklyNow = getStoryWeeklyStatus(story.lastChapterCompletedAt);
+    const dailyNow = getStoryDailyStatus(story.lastChapterCompletedAt);
 
     if (!alreadyDone) {
-      if (!prevDone || lv.level < ch.minLevel || !weeklyNow.canCompleteNewChapter) {
+      if (!prevDone || lv.level < ch.minLevel || !dailyNow.canCompleteNewChapter) {
         return;
       }
     }
@@ -213,7 +215,7 @@ export function StoryTab({
     setPhase('battle');
     setPlayerHp(playerMaxHp);
     setBossHp(ch.bossHp);
-    setAura(40);
+    setAura(30);
     setGuarding(false);
     setBossCharging(false);
     setTurnBusy(false);
@@ -317,14 +319,14 @@ export function StoryTab({
       const guardReduce = isGuarding ? 0.35 : 1;
       const dmg = Math.max(
         4,
-        Math.round(ch.bossAtk * (0.85 + Math.random() * 0.3) * honorReduce * guardReduce)
+        Math.round(ch.bossAtk * (0.8 + Math.random() * 0.25) * honorReduce * guardReduce)
       );
       const nextHp = Math.max(0, currentPlayerHp - dmg);
       setPlayerHp(nextHp);
       setGuarding(false);
       triggerShake('player');
 
-      const counterDmg = isGuarding ? Math.round(playerBaseAtk * 0.55) : 0;
+      const counterDmg = isGuarding ? Math.round(playerBaseAtk * 0.42) : 0;
       if (counterDmg > 0) {
         setBossHp((b) => {
           const nextB = Math.max(0, b - counterDmg);
@@ -448,7 +450,7 @@ export function StoryTab({
     const critChance = selectedBuff === 'strategy' ? 0.45 : 0.18;
     const isCrit = Math.random() < critChance;
     const dmg = Math.round(
-      playerBaseAtk * (0.9 + Math.random() * 0.25) * furyMult * (isCrit ? 1.55 : 1)
+      playerBaseAtk * (0.75 + Math.random() * 0.2) * furyMult * (isCrit ? 1.4 : 1)
     );
     const nextBossHp = Math.max(0, bossHp - dmg);
     setBossHp(nextBossHp);
@@ -458,6 +460,36 @@ export function StoryTab({
       isCrit
         ? `⚡ ¡CRÍTICO con ${warriorMoveset.physical.name}! -${dmg} HP (+30% ${warriorEnergy.shortName}).`
         : `👊 ${warriorMoveset.physical.name}: -${dmg} HP (+30% ${warriorEnergy.shortName}).`,
+      ...prev.slice(0, 5),
+    ]);
+
+    if (nextBossHp <= 0) {
+      handleFinishVictory(activeChapter);
+      setTurnBusy(false);
+      return;
+    }
+    runBossTurn(activeChapter, playerHp, false, bossCharging);
+  };
+
+  const handleSpecial = () => {
+    if (!activeChapter || turnBusy || clashActive || aura < STORY_SPECIAL_COST) {
+      return;
+    }
+    setTurnBusy(true);
+    const furyMult = selectedBuff === 'fury' ? 1.25 : 1;
+    const critChance = selectedBuff === 'strategy' ? 0.52 : 0.26;
+    const isCrit = Math.random() < critChance;
+    const dmg = Math.round(
+      playerBaseAtk * (1.3 + Math.random() * 0.22) * furyMult * (isCrit ? 1.45 : 1)
+    );
+    const nextBossHp = Math.max(0, bossHp - dmg);
+    setBossHp(nextBossHp);
+    setAura((a) => Math.max(0, a - STORY_SPECIAL_COST));
+    triggerShake('boss');
+    setBattleLog((prev) => [
+      isCrit
+        ? `✨ ¡CRÍTICO · ${warriorMoveset.special.name}! -${dmg} HP (-${STORY_SPECIAL_COST}% ${warriorEnergy.shortName}).`
+        : `✨ ${warriorMoveset.special.name}: -${dmg} HP (-${STORY_SPECIAL_COST}% ${warriorEnergy.shortName}).`,
       ...prev.slice(0, 5),
     ]);
 
@@ -741,42 +773,96 @@ export function StoryTab({
                 </button>
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <button
                   type="button"
                   disabled={turnBusy}
                   onClick={handleStrike}
-                  className="min-w-0 min-h-[50px] px-4 rounded-xl bg-[#101218] border border-[#38BDF8]/50 text-[#F1F5F9] font-extrabold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
+                  className="min-w-0 min-h-[58px] px-3 py-2 rounded-xl bg-[#101218] border border-[#38BDF8]/50 text-[#F1F5F9] flex flex-col items-center justify-center gap-0.5 disabled:opacity-45 active:scale-[0.98] transition-transform"
                 >
-                  <Swords className="w-4 h-4 text-[#38BDF8] shrink-0" />
-                  <span className="truncate">{warriorMoveset.physical.name}</span>
+                  <span className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-black max-w-full">
+                    <Swords className="w-3.5 h-3.5 text-[#38BDF8] shrink-0" />
+                    <span className="truncate">{warriorMoveset.physical.name}</span>
+                  </span>
+                  <span className="text-[10px] font-semibold text-[#38BDF8] truncate max-w-full">
+                    Físico · +30% {warriorEnergy.shortName}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={turnBusy || aura < STORY_SPECIAL_COST}
+                  onClick={handleSpecial}
+                  className={`min-w-0 min-h-[58px] px-3 py-2 rounded-xl border flex flex-col items-center justify-center gap-0.5 active:scale-[0.98] transition-transform ${
+                    aura >= STORY_SPECIAL_COST && !turnBusy
+                      ? 'bg-[#101218] text-[#F1F5F9]'
+                      : 'bg-[#07080B] border-[#1B1E26] text-[#8A92A2] opacity-45 cursor-not-allowed'
+                  }`}
+                  style={{
+                    borderColor:
+                      aura >= STORY_SPECIAL_COST && !turnBusy
+                        ? `${warriorMoveset.accentColor}99`
+                        : '#1B1E26',
+                  }}
+                >
+                  <span className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-black max-w-full">
+                    <Sparkles
+                      className="w-3.5 h-3.5 shrink-0"
+                      style={{
+                        color:
+                          aura >= STORY_SPECIAL_COST
+                            ? warriorMoveset.accentColor
+                            : '#8A92A2',
+                      }}
+                    />
+                    <span className="truncate">{warriorMoveset.special.name}</span>
+                  </span>
+                  <span
+                    className="text-[10px] font-semibold truncate max-w-full"
+                    style={{
+                      color:
+                        aura >= STORY_SPECIAL_COST ? warriorEnergy.color : '#8A92A2',
+                    }}
+                  >
+                    {aura >= STORY_SPECIAL_COST
+                      ? `Especial · -${STORY_SPECIAL_COST}% ${warriorEnergy.shortName}`
+                      : `Especial (${aura}/${STORY_SPECIAL_COST}% ${warriorEnergy.shortName})`}
+                  </span>
                 </button>
 
                 <button
                   type="button"
                   disabled={turnBusy}
                   onClick={handleGuard}
-                  className="min-w-0 min-h-[50px] px-4 rounded-xl bg-[#101218] border border-[#22C55E]/50 text-[#F1F5F9] font-extrabold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
+                  className="min-w-0 min-h-[58px] px-3 py-2 rounded-xl bg-[#101218] border border-[#22C55E]/50 text-[#F1F5F9] flex flex-col items-center justify-center gap-0.5 disabled:opacity-45 active:scale-[0.98] transition-transform"
                 >
-                  <Shield className="w-4 h-4 text-[#22C55E] shrink-0" />
-                  <span className="truncate">{warriorMoveset.guard.name} (+HP)</span>
+                  <span className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-black max-w-full">
+                    <Shield className="w-3.5 h-3.5 text-[#22C55E] shrink-0" />
+                    <span className="truncate">{warriorMoveset.guard.name}</span>
+                  </span>
+                  <span className="text-[10px] font-semibold text-[#22C55E] truncate max-w-full">
+                    +HP · +20% {warriorEnergy.shortName}
+                  </span>
                 </button>
 
                 <button
                   type="button"
                   disabled={turnBusy || aura < 100}
                   onClick={handleUltimate}
-                  className={`min-w-0 min-h-[50px] px-4 rounded-xl font-black text-sm inline-flex items-center justify-center gap-2 active:scale-[0.98] ${
-                    aura >= 100
+                  className={`min-w-0 min-h-[58px] px-3 py-2 rounded-xl flex flex-col items-center justify-center gap-0.5 active:scale-[0.98] transition-transform ${
+                    aura >= 100 && !turnBusy
                       ? 'bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] shadow-[0_0_16px_rgba(29,78,216,0.28)]'
-                      : 'bg-[#07080B] border border-[#1B1E26] text-[#8A92A2] opacity-60'
+                      : 'bg-[#07080B] border border-[#1B1E26] text-[#8A92A2] opacity-45 cursor-not-allowed'
                   }`}
                 >
-                  <Flame className="w-4 h-4 shrink-0" />
-                  <span className="truncate">
+                  <span className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-black max-w-full">
+                    <Flame className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">{warriorMoveset.ultimate.name}</span>
+                  </span>
+                  <span className="text-[10px] font-semibold opacity-90 truncate max-w-full">
                     {aura >= 100
-                      ? `¡${warriorMoveset.ultimate.name}!`
-                      : `${warriorMoveset.ultimate.name} (${aura}%)`}
+                      ? `¡Definitiva · ${warriorEnergy.clashLabel}!`
+                      : `Definitiva (${aura}/100%)`}
                   </span>
                 </button>
               </div>
@@ -823,14 +909,14 @@ export function StoryTab({
 
             {phase === 'victory' && earnedXpThisRun > 0 && (
               <div className="rounded-xl bg-[#07080B] border border-[#22C55E]/40 p-3 text-xs font-extrabold text-[#22C55E]">
-                ⚡ Recompensa semanal acreditada: +{earnedXpThisRun} XP para{' '}
-                {warrior.name} · Próximo capítulo nuevo en 7 días
+                ⚡ Recompensa diaria acreditada: +{earnedXpThisRun} XP para{' '}
+                {warrior.name} · Próximo capítulo nuevo disponible mañana
               </div>
             )}
 
             {phase === 'victory' && earnedXpThisRun === 0 && (
               <div className="rounded-xl bg-[#07080B] border border-[#1B1E26] p-3 text-xs font-bold text-[#8A92A2]">
-                Capítulo completado en modo práctica (ya habías reclamado su recompensa semanal).
+                Capítulo completado en modo práctica (ya habías reclamado su recompensa diaria).
               </div>
             )}
 
@@ -924,7 +1010,7 @@ export function StoryTab({
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Hero Warrior Combat Status + Weekly Limit Card */}
+      {/* Hero Warrior Combat Status + Daily Limit Card */}
       <section
         className="rounded-2xl border p-5 bg-[radial-gradient(circle_at_15%_15%,rgba(14,165,233,0.06),#0A0B0F_72%)]"
         style={{ borderColor: `${warrior.auraColor}55` }}
@@ -934,7 +1020,7 @@ export function StoryTab({
             <CharacterAvatar charId={warrior.id} size="md" />
             <div className="min-w-0">
               <div className="text-xs font-bold uppercase tracking-wider text-[#FACC15]">
-                Modo Historia · 100 Capítulos Semanales
+                Modo Historia · 100 Capítulos (1 por día)
               </div>
               <h2 className="text-lg sm:text-xl font-black text-[#F1F5F9] truncate">
                 {warrior.name} — {alignmentTitle}
@@ -963,26 +1049,26 @@ export function StoryTab({
           />
         </div>
 
-        {/* Weekly Cooldown Banner */}
+        {/* Daily Cooldown Banner */}
         <div
           className={`mt-4 rounded-xl border px-3.5 py-2.5 flex items-center gap-2.5 text-xs ${
-            weeklyStatus.canCompleteNewChapter
+            dailyStatus.canCompleteNewChapter
               ? 'bg-[#22C55E]/10 border-[#22C55E]/40 text-[#86EFAC]'
               : 'bg-[#FACC15]/10 border-[#FACC15]/40 text-[#FDE68A]'
           }`}
         >
           <CalendarClock className="w-4 h-4 shrink-0" />
-          {weeklyStatus.canCompleteNewChapter ? (
+          {dailyStatus.canCompleteNewChapter ? (
             <span>
-              <strong>Capítulo semanal disponible:</strong> completa 1 capítulo nuevo esta semana para ganar su XP.
+              <strong>Capítulo diario disponible:</strong> completa 1 capítulo nuevo hoy para ganar su XP.
             </span>
           ) : (
             <span>
-              <strong>Límite semanal alcanzado (1/semana):</strong> próximo capítulo nuevo en{' '}
+              <strong>Límite diario alcanzado (1/día):</strong> próximo capítulo nuevo en{' '}
               <strong className="tabular-nums">
-                {formatWeeklyCountdown(weeklyStatus.remainingMs)}
+                {formatDailyCountdown(dailyStatus.remainingMs)}
               </strong>{' '}
-              ({weeklyStatus.nextAvailableDate?.toLocaleDateString('es-ES', {
+              ({dailyStatus.nextAvailableDate?.toLocaleDateString('es-ES', {
                 weekday: 'short',
                 day: 'numeric',
                 month: 'short',
@@ -1076,7 +1162,7 @@ export function StoryTab({
             !completed &&
             prevCompleted &&
             levelMet &&
-            weeklyStatus.canCompleteNewChapter;
+            dailyStatus.canCompleteNewChapter;
 
           return (
             <div
@@ -1104,7 +1190,7 @@ export function StoryTab({
                     </p>
                     <div className="flex flex-wrap items-center gap-3 mt-2 text-[11px] font-bold tabular-nums">
                       <span className="text-[#FACC15]">
-                        ⚡ +{ch.xpReward} XP semanal
+                        ⚡ +{ch.xpReward} XP diarios
                       </span>
                       <span className="text-[#8A92A2]">
                         Jefe: {boss.name} (HP {ch.bossHp})
@@ -1158,15 +1244,15 @@ export function StoryTab({
                       <Lock className="w-4 h-4" />
                       Sube a Nivel {ch.minLevel} entrenando
                     </>
-                  ) : !weeklyStatus.canCompleteNewChapter ? (
+                  ) : !dailyStatus.canCompleteNewChapter ? (
                     <>
                       <CalendarClock className="w-4 h-4" />
-                      Disponible en {formatWeeklyCountdown(weeklyStatus.remainingMs)}
+                      Disponible en {formatDailyCountdown(dailyStatus.remainingMs)}
                     </>
                   ) : (
                     <>
                       <Zap className="w-4 h-4" />
-                      Jugar Capítulo Semanal (+{ch.xpReward} XP)
+                      Jugar Capítulo Diario (+{ch.xpReward} XP)
                     </>
                   )}
                 </button>

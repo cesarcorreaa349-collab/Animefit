@@ -66,7 +66,7 @@ import {
   getCharacterStage,
   getExerciseById,
   getLevelInfo,
-  getStoryWeeklyStatus,
+  getStoryDailyStatus,
   loadDB,
   markExplicitLogout,
   mergeRichUserProfiles,
@@ -1293,9 +1293,9 @@ export default function App() {
         return false;
       }
 
-      const weekly = getStoryWeeklyStatus(currStory.lastChapterCompletedAt);
-      if (!weekly.canCompleteNewChapter) {
-        pushToast('⏳ Ya completaste tu capítulo semanal. Vuelve la próxima semana.');
+      const daily = getStoryDailyStatus(currStory.lastChapterCompletedAt);
+      if (!daily.canCompleteNewChapter) {
+        pushToast('⏳ Ya completaste tu capítulo diario. Vuelve mañana para desbloquear el siguiente.');
         return false;
       }
 
@@ -1334,8 +1334,8 @@ export default function App() {
 
       pushToast(
         newLevel > prevLevel
-          ? `🔥 ¡Cap. ${chapter.number} completado! +${chapter.xpReward} XP semanales · ¡Subiste a Nivel ${newLevel}!`
-          : `🏆 ¡Cap. ${chapter.number} completado! +${chapter.xpReward} XP semanales ganados.`
+          ? `🔥 ¡Cap. ${chapter.number} completado! +${chapter.xpReward} XP diarios · ¡Subiste a Nivel ${newLevel}!`
+          : `🏆 ¡Cap. ${chapter.number} completado! +${chapter.xpReward} XP diarios ganados.`
       );
       return true;
     },
