@@ -23,6 +23,7 @@ import {
   UserProfile,
 } from '../types/animefit';
 import { Modal } from './Modal';
+import { NotificationSettingsCard } from './NotificationSettingsCard';
 
 export const MIN_STEP_GOAL = 3000;
 
@@ -173,6 +174,8 @@ interface WellnessTrackerSectionProps {
   reminderPermission: NotificationPermission | 'unsupported';
   reminderEnabled: boolean;
   hoursSinceActivity: number | null;
+  onRequestReminderPermission: () => void | Promise<unknown>;
+  onRefreshReminderPermission: () => void;
   onToggleReminder: () => void;
   onTestReminder: () => void;
   onUpdateWellness: (
@@ -196,6 +199,8 @@ export function WellnessTrackerSection({
   reminderPermission,
   reminderEnabled,
   hoursSinceActivity,
+  onRequestReminderPermission,
+  onRefreshReminderPermission,
   onToggleReminder,
   onTestReminder,
   onUpdateWellness,
@@ -1005,87 +1010,21 @@ export function WellnessTrackerSection({
       {/* 24h Inactivity Reminder Modal */}
       <Modal
         open={reminderModalOpen}
-        title="Recordatorio de Entrenamiento (24h)"
+        title="Notificaciones y Recordatorio (24h)"
         onClose={() => setReminderModalOpen(false)}
         maxWidthClass="max-w-md"
       >
-        <div className="flex flex-col gap-3.5 text-xs text-[#8A92A2] leading-relaxed">
-          <div className="rounded-xl bg-[#07080B] border border-[#1B1E26] p-3">
-            <div className="flex items-center justify-between gap-2 mb-1">
-              <strong className="text-[#F1F5F9]">Estado de notificaciones PWA</strong>
-              <span
-                className={`font-bold ${
-                  !reminderSupported
-                    ? 'text-[#8A92A2]'
-                    : reminderPermission === 'denied'
-                    ? 'text-[#F59E0B]'
-                    : reminderEnabled
-                    ? 'text-[#22C55E]'
-                    : 'text-[#8A92A2]'
-                }`}
-              >
-                {!reminderSupported
-                  ? 'No compatible'
-                  : reminderPermission === 'denied'
-                  ? 'Bloqueadas'
-                  : reminderEnabled
-                  ? 'Activadas'
-                  : 'Desactivadas'}
-              </span>
-            </div>
-            Si pasan <strong className="text-[#F1F5F9]">24 horas</strong> sin registrar un entrenamiento, pasos o sueño, el Service Worker enviará una notificación local para recordarte entrenar.
-            {hoursSinceActivity !== null && (
-              <div className="mt-2 pt-2 border-t border-[#1B1E26] tabular-nums">
-                Última actividad:{' '}
-                <strong className="text-[#38BDF8]">
-                  {hoursSinceActivity === 0
-                    ? 'hace menos de 1 hora'
-                    : `hace ${hoursSinceActivity} h`}
-                </strong>
-              </div>
-            )}
-          </div>
-
-          {reminderPermission === 'denied' && (
-            <div className="rounded-xl bg-[#F59E0B]/10 border border-[#F59E0B]/30 p-3 text-[#FACC15]">
-              Las notificaciones están bloqueadas en tu navegador. Toca el candado o ajustes del sitio y selecciona Permitir notificaciones.
-            </div>
-          )}
-
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled={!reminderSupported}
-              onClick={onToggleReminder}
-              className={`min-h-[42px] flex-1 px-4 rounded-xl text-xs font-extrabold inline-flex items-center justify-center gap-1.5 disabled:opacity-50 ${
-                reminderEnabled
-                  ? 'bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-[#F1F5F9]'
-                  : 'bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9]'
-              }`}
-            >
-              {reminderEnabled ? (
-                <>
-                  <BellOff className="w-4 h-4 text-[#8A92A2]" />
-                  Desactivar recordatorio
-                </>
-              ) : (
-                <>
-                  <Bell className="w-4 h-4" />
-                  Activar recordatorio 24h
-                </>
-              )}
-            </button>
-            {reminderSupported && reminderPermission !== 'denied' && (
-              <button
-                type="button"
-                onClick={onTestReminder}
-                className="min-h-[42px] px-4 rounded-xl bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-xs font-bold text-[#38BDF8]"
-              >
-                Probar aviso
-              </button>
-            )}
-          </div>
-        </div>
+        <NotificationSettingsCard
+          variant="modal"
+          supported={reminderSupported}
+          permission={reminderPermission}
+          enabled={reminderEnabled}
+          hoursSinceActivity={hoursSinceActivity}
+          onRequestPermission={onRequestReminderPermission}
+          onRefreshPermission={onRefreshReminderPermission}
+          onToggleReminder={onToggleReminder}
+          onTestReminder={onTestReminder}
+        />
       </Modal>
     </section>
   );

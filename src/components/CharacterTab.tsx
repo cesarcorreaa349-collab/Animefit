@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Bell, BellOff, Check, Eye, EyeOff, KeyRound, Pencil, Trash2 } from 'lucide-react';
+import { Check, Eye, EyeOff, KeyRound, Pencil, Trash2 } from 'lucide-react';
 import { UserProfile } from '../types/animefit';
 import { computeTrainingPvpBonus, getCharacterPhaseMoveset } from '../data/movesets';
 import {
@@ -12,6 +12,7 @@ import {
 } from '../utils/animefit';
 import { CharacterAvatar } from './CharacterAvatar';
 import { Modal } from './Modal';
+import { NotificationSettingsCard } from './NotificationSettingsCard';
 import { PhaseMovesetPreview } from './PhaseMovesetPreview';
 import { WeeklySundaySummaryCard } from './WeeklySundaySummary';
 import { WeeklyVolumeChart } from './WeeklyVolumeChart';
@@ -28,6 +29,8 @@ interface CharacterTabProps {
   reminderPermission: NotificationPermission | 'unsupported';
   reminderEnabled: boolean;
   hoursSinceActivity: number | null;
+  onRequestReminderPermission: () => void | Promise<unknown>;
+  onRefreshReminderPermission: () => void;
   onToggleReminder: () => void;
   onTestReminder: () => void;
 }
@@ -41,6 +44,8 @@ export function CharacterTab({
   reminderPermission,
   reminderEnabled,
   hoursSinceActivity,
+  onRequestReminderPermission,
+  onRefreshReminderPermission,
   onToggleReminder,
   onTestReminder,
 }: CharacterTabProps) {
@@ -123,7 +128,12 @@ export function CharacterTab({
           <CharacterAvatar charId={ch.id} size="xl" className="border-0" />
         </div>
 
-        <div className="text-xs font-semibold text-[#8A92A2]">{ch.anime}</div>
+        <div className="text-xs font-semibold text-[#8A92A2]">
+          {ch.anime} · Energía:{' '}
+          <span className="font-bold" style={{ color: activeMoveset.energy.color }}>
+            {activeMoveset.energy.name}
+          </span>
+        </div>
         <h2 className="text-2xl font-black text-[#F1F5F9] mt-0.5">{ch.name}</h2>
         <div
           className="text-base font-extrabold mt-1"
@@ -200,7 +210,7 @@ export function CharacterTab({
           {trainingBonus.badgeLabel && (
             <div className="mt-2.5 text-[11px] font-bold text-[#FACC15] text-center tabular-nums">
               🔥 Bono de entreno PvP: {trainingBonus.badgeLabel} · +
-              {trainingBonus.bonusAura}% Ki inicial · +
+              {trainingBonus.bonusAura}% {activeMoveset.energy.shortName} inicial · +
               {trainingBonus.ultBoostPct}% daño en Definitiva
             </div>
           )}
@@ -413,82 +423,16 @@ export function CharacterTab({
             </section>
           )}
 
-          <section className="bg-[#0A0B0F] border border-[#1B1E26] rounded-2xl p-4 sm:p-5 flex flex-col gap-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <h3 className="text-sm font-extrabold text-[#F1F5F9]">
-                  Notificaciones PWA (24h sin entrenar)
-                </h3>
-                <p className="text-xs text-[#8A92A2] mt-0.5 leading-snug">
-                  Te enviamos un aviso local si pasan 24 horas sin registrar entrenamientos ni actividad física.
-                </p>
-              </div>
-              <span
-                className={`text-xs font-bold whitespace-nowrap shrink-0 ${
-                  !reminderSupported
-                    ? 'text-[#8A92A2]'
-                    : reminderPermission === 'denied'
-                    ? 'text-[#F59E0B]'
-                    : reminderEnabled
-                    ? 'text-[#22C55E]'
-                    : 'text-[#8A92A2]'
-                }`}
-              >
-                {!reminderSupported
-                  ? 'No compatible'
-                  : reminderPermission === 'denied'
-                  ? 'Bloqueadas'
-                  : reminderEnabled
-                  ? 'Activadas'
-                  : 'Desactivadas'}
-              </span>
-            </div>
-
-            {hoursSinceActivity !== null && (
-              <div className="text-xs text-[#8A92A2] tabular-nums">
-                Última actividad registrada:{' '}
-                <strong className="text-[#F1F5F9]">
-                  {hoursSinceActivity === 0
-                    ? 'hace menos de 1 hora'
-                    : `hace ${hoursSinceActivity} h`}
-                </strong>
-              </div>
-            )}
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                disabled={!reminderSupported}
-                onClick={onToggleReminder}
-                className={`min-h-[40px] flex-1 px-3.5 rounded-xl text-xs font-extrabold inline-flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-50 ${
-                  reminderEnabled
-                    ? 'bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-[#F1F5F9]'
-                    : 'bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9]'
-                }`}
-              >
-                {reminderEnabled ? (
-                  <>
-                    <BellOff className="w-3.5 h-3.5 text-[#8A92A2]" />
-                    Desactivar recordatorio
-                  </>
-                ) : (
-                  <>
-                    <Bell className="w-3.5 h-3.5" />
-                    Activar recordatorio 24h
-                  </>
-                )}
-              </button>
-              {reminderSupported && reminderPermission !== 'denied' && (
-                <button
-                  type="button"
-                  onClick={onTestReminder}
-                  className="min-h-[40px] px-3.5 rounded-xl bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-xs font-bold text-[#38BDF8] whitespace-nowrap"
-                >
-                  Probar aviso
-                </button>
-              )}
-            </div>
-          </section>
+          <NotificationSettingsCard
+            supported={reminderSupported}
+            permission={reminderPermission}
+            enabled={reminderEnabled}
+            hoursSinceActivity={hoursSinceActivity}
+            onRequestPermission={onRequestReminderPermission}
+            onRefreshPermission={onRefreshReminderPermission}
+            onToggleReminder={onToggleReminder}
+            onTestReminder={onTestReminder}
+          />
 
           <section className="bg-[#0A0B0F] border border-[#1B1E26] rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="min-w-0">

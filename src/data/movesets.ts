@@ -1,6 +1,7 @@
 import { CHARACTERS } from './characters.ts';
 import type {
   CharacterDef,
+  CharacterEnergyProfile,
   MoveSkillDef,
   PhaseMoveset,
   TrainingPvpBonus,
@@ -134,13 +135,246 @@ function inferCombatRole(char: CharacterDef): CombatRole {
   return 'striker';
 }
 
+const DEFAULT_ENERGY_PROFILE: CharacterEnergyProfile = {
+  name: 'Energía',
+  shortName: 'Energía',
+  barLabel: 'Energía',
+  chargeLabel: 'Cargar Energía',
+  clashLabel: 'Choque de Energía',
+  color: '#38BDF8',
+  barGradientFrom: '#38BDF8',
+  barGradientTo: '#FACC15',
+};
+
+export function getAnimeEnergyProfile(
+  anime?: string,
+  charId?: string
+): CharacterEnergyProfile {
+  switch (anime) {
+    case 'Dragon Ball':
+      return {
+        name: 'Ki',
+        shortName: 'Ki',
+        barLabel: 'Aura Ki',
+        chargeLabel: 'Cargar Ki',
+        clashLabel: 'Choque de Ki',
+        color: '#FACC15',
+        barGradientFrom: '#38BDF8',
+        barGradientTo: '#FACC15',
+      };
+    case 'Naruto':
+      return {
+        name: 'Chakra',
+        shortName: 'Chakra',
+        barLabel: 'Chakra',
+        chargeLabel: 'Concentrar Chakra',
+        clashLabel: 'Choque de Chakra',
+        color: '#38BDF8',
+        barGradientFrom: '#0284C7',
+        barGradientTo: '#38BDF8',
+      };
+    case 'One Piece':
+      return {
+        name: 'Haki',
+        shortName: 'Haki',
+        barLabel: 'Haki',
+        chargeLabel: 'Canalizar Haki',
+        clashLabel: 'Choque de Haki',
+        color: '#F43F5E',
+        barGradientFrom: '#DC2626',
+        barGradientTo: '#FACC15',
+      };
+    case 'Demon Slayer':
+      return {
+        name: 'Respiración',
+        shortName: 'Respiración',
+        barLabel: 'Respiración',
+        chargeLabel: 'Respiración Total',
+        clashLabel: 'Choque de Posturas',
+        color: '#22D3EE',
+        barGradientFrom: '#06B6D4',
+        barGradientTo: '#F97316',
+      };
+    case 'Jujutsu Kaisen':
+      return {
+        name: 'Energía Maldita',
+        shortName: 'E. Maldita',
+        barLabel: 'Energía Maldita',
+        chargeLabel: 'Fluir E. Maldita',
+        clashLabel: 'Choque de Maldiciones',
+        color: '#A855F7',
+        barGradientFrom: '#6366F1',
+        barGradientTo: '#A855F7',
+      };
+    case 'Bleach':
+      return {
+        name: 'Reiatsu',
+        shortName: 'Reiatsu',
+        barLabel: 'Reiatsu',
+        chargeLabel: 'Liberar Reiatsu',
+        clashLabel: 'Choque de Reiatsu',
+        color: '#818CF8',
+        barGradientFrom: '#4F46E5',
+        barGradientTo: '#38BDF8',
+      };
+    case 'Hunter x Hunter':
+      return {
+        name: 'Nen',
+        shortName: 'Nen',
+        barLabel: 'Nen',
+        chargeLabel: 'Concentrar Nen',
+        clashLabel: 'Choque de Nen',
+        color: '#34D399',
+        barGradientFrom: '#059669',
+        barGradientTo: '#34D399',
+      };
+    case 'Solo Leveling':
+      return {
+        name: 'Maná',
+        shortName: 'Maná',
+        barLabel: 'Maná Sombrío',
+        chargeLabel: 'Canalizar Maná',
+        clashLabel: 'Choque de Sombras',
+        color: '#C084FC',
+        barGradientFrom: '#5B21B6',
+        barGradientTo: '#C084FC',
+      };
+    case 'My Hero Academia':
+      return {
+        name: 'Don',
+        shortName: 'Don',
+        barLabel: 'Energía Don',
+        chargeLabel: 'Cargar Don',
+        clashLabel: 'Choque Plus Ultra',
+        color: '#22C55E',
+        barGradientFrom: '#16A34A',
+        barGradientTo: '#FACC15',
+      };
+    case 'Attack on Titan':
+      return {
+        name: 'Impulso',
+        shortName: 'Impulso',
+        barLabel: 'Impulso Titán',
+        chargeLabel: 'Cargar Impulso',
+        clashLabel: 'Choque Titánico',
+        color: '#F97316',
+        barGradientFrom: '#EA580C',
+        barGradientTo: '#FACC15',
+      };
+    case 'Black Clover':
+      if (charId === 'asta') {
+        return {
+          name: 'Antimagia',
+          shortName: 'Antimagia',
+          barLabel: 'Antimagia',
+          chargeLabel: 'Canalizar Antimagia',
+          clashLabel: 'Choque Antimagia',
+          color: '#EF4444',
+          barGradientFrom: '#991B1B',
+          barGradientTo: '#EF4444',
+        };
+      }
+      return {
+        name: 'Maná',
+        shortName: 'Maná',
+        barLabel: 'Maná',
+        chargeLabel: 'Canalizar Maná',
+        clashLabel: 'Choque Mágico',
+        color: '#38BDF8',
+        barGradientFrom: '#0284C7',
+        barGradientTo: '#22D3EE',
+      };
+    case 'Chainsaw Man':
+      return {
+        name: 'Fuerza Demoníaca',
+        shortName: 'F. Demon.',
+        barLabel: 'Fuerza Demoníaca',
+        chargeLabel: 'Acelerar Motor',
+        clashLabel: 'Choque Demoníaco',
+        color: '#EF4444',
+        barGradientFrom: '#B91C1C',
+        barGradientTo: '#FB923C',
+      };
+    case 'Fullmetal Alchemist':
+      return {
+        name: 'Alquimia',
+        shortName: 'Alquimia',
+        barLabel: 'Alquimia',
+        chargeLabel: 'Transmutar Energía',
+        clashLabel: 'Choque Alquímico',
+        color: '#F59E0B',
+        barGradientFrom: '#D97706',
+        barGradientTo: '#FDE047',
+      };
+    case "JoJo's Bizarre Adv.":
+      return {
+        name: 'Poder Stand',
+        shortName: 'Stand',
+        barLabel: 'Poder Stand',
+        chargeLabel: 'Despertar Stand',
+        clashLabel: 'Choque de Stands',
+        color: '#C084FC',
+        barGradientFrom: '#7E22CE',
+        barGradientTo: '#E879F9',
+      };
+    case 'One Punch Man':
+      return {
+        name: 'Espíritu',
+        shortName: 'Espíritu',
+        barLabel: 'Espíritu de Lucha',
+        chargeLabel: 'Cargar Espíritu',
+        clashLabel: 'Choque de Impacto',
+        color: '#FACC15',
+        barGradientFrom: '#EF4444',
+        barGradientTo: '#FACC15',
+      };
+    case 'Saint Seiya':
+      return {
+        name: 'Cosmos',
+        shortName: 'Cosmos',
+        barLabel: 'Cosmos',
+        chargeLabel: 'Arder Cosmos',
+        clashLabel: 'Choque de Cosmos',
+        color: '#60A5FA',
+        barGradientFrom: '#2563EB',
+        barGradientTo: '#FDE047',
+      };
+    case 'Yu Yu Hakusho':
+      return {
+        name: 'Reiki',
+        shortName: 'Reiki',
+        barLabel: 'Energía Reiki',
+        chargeLabel: 'Concentrar Reiki',
+        clashLabel: 'Choque Espiritual',
+        color: '#38BDF8',
+        barGradientFrom: '#0284C7',
+        barGradientTo: '#67E8F9',
+      };
+    default:
+      return DEFAULT_ENERGY_PROFILE;
+  }
+}
+
+export function getCharacterEnergyProfile(
+  charId?: string
+): CharacterEnergyProfile {
+  if (!charId) return DEFAULT_ENERGY_PROFILE;
+  const found = CHARACTERS.find((c) => c.id === charId);
+  if (!found) return DEFAULT_ENERGY_PROFILE;
+  return getAnimeEnergyProfile(found.anime, found.id);
+}
+
 interface AnimeFlavor {
   energy: string;
   styleLabel: string;
   elementTag: string;
 }
 
-function getAnimeFlavor(anime: string, role: CombatRole): AnimeFlavor {
+function getAnimeFlavor(
+  anime: string,
+  role: CombatRole,
+  energyProfile: CharacterEnergyProfile
+): AnimeFlavor {
   const roleSuffix =
     role === 'swordsman'
       ? 'Espadachín'
@@ -155,71 +389,126 @@ function getAnimeFlavor(anime: string, role: CombatRole): AnimeFlavor {
   switch (anime) {
     case 'Dragon Ball':
       return {
-        energy: 'Ki',
+        energy: energyProfile.name,
         styleLabel: `Artes Marciales · ${roleSuffix}`,
         elementTag: 'Ki',
       };
     case 'Naruto':
       return {
-        energy: 'Chakra',
+        energy: energyProfile.name,
         styleLabel: `Shinobi · ${roleSuffix}`,
         elementTag: 'Chakra',
       };
     case 'One Piece':
       return {
-        energy: 'Haki',
+        energy: energyProfile.name,
         styleLabel: `Pirata · ${roleSuffix}`,
         elementTag: 'Haki',
       };
     case 'Demon Slayer':
       return {
-        energy: 'Respiración',
+        energy: energyProfile.name,
         styleLabel: `Cazador · ${roleSuffix}`,
         elementTag: 'Respiración',
       };
     case 'Jujutsu Kaisen':
       return {
-        energy: 'Energía Maldita',
+        energy: energyProfile.name,
         styleLabel: `Hechicero · ${roleSuffix}`,
         elementTag: 'Maldición',
       };
     case 'My Hero Academia':
       return {
-        energy: 'Don',
+        energy: energyProfile.name,
         styleLabel: `Héroe Pro · ${roleSuffix}`,
         elementTag: 'Don',
       };
     case 'Attack on Titan':
       return {
-        energy: 'Acero y Titán',
+        energy: energyProfile.name,
         styleLabel: `Exploración · ${roleSuffix}`,
         elementTag: 'Titán',
       };
     case 'Bleach':
       return {
-        energy: 'Reiatsu',
+        energy: energyProfile.name,
         styleLabel: `Shinigami · ${roleSuffix}`,
         elementTag: 'Reiatsu',
       };
     case 'Hunter x Hunter':
       return {
-        energy: 'Nen',
+        energy: energyProfile.name,
         styleLabel: `Cazador Nen · ${roleSuffix}`,
         elementTag: 'Nen',
       };
     case 'Solo Leveling':
       return {
-        energy: 'Sombras',
+        energy: energyProfile.name,
         styleLabel: `Monarca · ${roleSuffix}`,
         elementTag: 'Sombras',
       };
+    case 'Saint Seiya':
+      return {
+        energy: energyProfile.name,
+        styleLabel: `Caballero · ${roleSuffix}`,
+        elementTag: 'Cosmos',
+      };
+    case 'Yu Yu Hakusho':
+      return {
+        energy: energyProfile.name,
+        styleLabel: `Detective · ${roleSuffix}`,
+        elementTag: 'Reiki',
+      };
+    case 'Fullmetal Alchemist':
+      return {
+        energy: energyProfile.name,
+        styleLabel: `Alquimista · ${roleSuffix}`,
+        elementTag: 'Alquimia',
+      };
+    case 'Black Clover':
+      return {
+        energy: energyProfile.name,
+        styleLabel: `Caballero Mágico · ${roleSuffix}`,
+        elementTag: energyProfile.shortName,
+      };
+    case 'Chainsaw Man':
+      return {
+        energy: energyProfile.name,
+        styleLabel: `Cazador Demonios · ${roleSuffix}`,
+        elementTag: energyProfile.shortName,
+      };
+    case "JoJo's Bizarre Adv.":
+      return {
+        energy: energyProfile.name,
+        styleLabel: `Usuario Stand · ${roleSuffix}`,
+        elementTag: 'Stand',
+      };
+    case 'One Punch Man':
+      return {
+        energy: energyProfile.name,
+        styleLabel: `Héroe · ${roleSuffix}`,
+        elementTag: 'Espíritu',
+      };
     default:
       return {
-        energy: 'Espíritu',
+        energy: energyProfile.name,
         styleLabel: `Guerrero · ${roleSuffix}`,
-        elementTag: 'Aura',
+        elementTag: energyProfile.shortName,
       };
   }
+}
+
+function localizeMoveSkillEnergy(
+  skill: MoveSkillDef,
+  energy: CharacterEnergyProfile
+): MoveSkillDef {
+  if (energy.name === 'Ki') return skill;
+  return {
+    name: skill.name,
+    effect: skill.effect
+      .replace(/Choque de Ki/g, energy.clashLabel)
+      .replace(/\bKi\b/g, energy.shortName),
+  };
 }
 
 const CUSTOM_MOVESETS: Record<string, CharacterMovesetSpec> = {
@@ -744,10 +1033,11 @@ const CUSTOM_MOVESETS: Record<string, CharacterMovesetSpec> = {
 function buildAutomaticStageMoveset(
   char: CharacterDef,
   stageIndex: number,
-  stageName: string
+  stageName: string,
+  energy: CharacterEnergyProfile
 ): PhaseMoveset {
   const role = inferCombatRole(char);
-  const flavor = getAnimeFlavor(char.anime, role);
+  const flavor = getAnimeFlavor(char.anime, role, energy);
   const tierLabel =
     stageIndex === 0
       ? 'Base'
@@ -762,21 +1052,22 @@ function buildAutomaticStageMoveset(
       styleLabel: flavor.styleLabel,
       elementTag: flavor.elementTag,
       accentColor: char.auraColor || '#38BDF8',
+      energy,
       physical: {
         name: stageIndex === 0 ? 'Tajo Rápido' : `Tajo ${tierLabel}`,
-        effect: `Corte ágil con ${flavor.energy} · +30% Ki`,
+        effect: `Corte ágil con ${flavor.energy} · +30% ${energy.shortName}`,
       },
       special: {
         name: `Estocada ${flavor.elementTag}`,
-        effect: `40% Ki · Corte penetrante (${shortStage})`,
+        effect: `40% ${energy.shortName} · Corte penetrante (${shortStage})`,
       },
       guard: {
         name: 'Parada con Hoja',
-        effect: 'Desvía golpes + contraataque · +8% HP',
+        effect: `Desvía golpes + ${energy.chargeLabel} · +8% HP`,
       },
       ultimate: {
         name: `Corte Definitivo: ${shortStage}`,
-        effect: `100% Ki · Tajo maestro en Choque de Ki`,
+        effect: `100% ${energy.shortName} · Tajo maestro en ${energy.clashLabel}`,
       },
       isFallback: true,
     };
@@ -788,21 +1079,22 @@ function buildAutomaticStageMoveset(
       styleLabel: flavor.styleLabel,
       elementTag: flavor.elementTag,
       accentColor: char.auraColor || '#F59E0B',
+      energy,
       physical: {
         name: stageIndex === 0 ? 'Golpe Titánico' : `Embestida ${tierLabel}`,
-        effect: 'Impacto físico pesado · +30% Ki',
+        effect: `Impacto físico pesado · +30% ${energy.shortName}`,
       },
       special: {
         name: `Choque Sísmico ${flavor.elementTag}`,
-        effect: `40% Ki · Quebranta guardia rival`,
+        effect: `40% ${energy.shortName} · Quebranta guardia rival`,
       },
       guard: {
         name: 'Muralla Inquebrantable',
-        effect: 'Blindaje máximo + recupera +8% HP',
+        effect: `Blindaje + ${energy.chargeLabel} · +8% HP`,
       },
       ultimate: {
         name: `Cataclismo de ${char.name.split(' ')[0]}`,
-        effect: `100% Ki · Impacto demoledor (${shortStage})`,
+        effect: `100% ${energy.shortName} · Impacto demoledor (${shortStage})`,
       },
       isFallback: true,
     };
@@ -814,21 +1106,22 @@ function buildAutomaticStageMoveset(
       styleLabel: flavor.styleLabel,
       elementTag: flavor.elementTag,
       accentColor: char.auraColor || '#A855F7',
+      energy,
       physical: {
         name: stageIndex === 0 ? 'Golpe Preciso' : `Asalto Táctico ${tierLabel}`,
-        effect: `Ataque calculado · +30% Ki`,
+        effect: `Ataque calculado · +30% ${energy.shortName}`,
       },
       special: {
         name: `Sello ${flavor.elementTag}`,
-        effect: `40% Ki · Daño técnico perforante`,
+        effect: `40% ${energy.shortName} · Daño técnico perforante`,
       },
       guard: {
         name: 'Lectura Estratégica',
-        effect: 'Anticipa al rival · +8% HP · +20% Ki',
+        effect: `Anticipa al rival · +8% HP · +20% ${energy.shortName}`,
       },
       ultimate: {
         name: `Jaque Mate: ${shortStage}`,
-        effect: `100% Ki · Técnica maestra en Choque`,
+        effect: `100% ${energy.shortName} · Técnica maestra en ${energy.clashLabel}`,
       },
       isFallback: true,
     };
@@ -840,21 +1133,22 @@ function buildAutomaticStageMoveset(
       styleLabel: flavor.styleLabel,
       elementTag: flavor.elementTag,
       accentColor: char.auraColor || '#FACC15',
+      energy,
       physical: {
         name: stageIndex === 0 ? `Golpe de ${flavor.energy}` : `Combo ${tierLabel}`,
-        effect: `Ráfaga cercana · +30% Ki`,
+        effect: `Ráfaga cercana · +30% ${energy.shortName}`,
       },
       special: {
         name: `Descarga de ${flavor.energy}`,
-        effect: `40% Ki · Proyectil de alta potencia`,
+        effect: `40% ${energy.shortName} · Proyectil de alta potencia`,
       },
       guard: {
         name: `Barrera de ${flavor.energy}`,
-        effect: 'Escudo energético · +8% HP · +20% Ki',
+        effect: `Escudo + ${energy.chargeLabel} · +8% HP · +20% ${energy.shortName}`,
       },
       ultimate: {
         name: `Supernova ${shortStage}`,
-        effect: `100% Ki · Descarga máxima de ${flavor.energy}`,
+        effect: `100% ${energy.shortName} · Descarga máxima de ${flavor.energy}`,
       },
       isFallback: true,
     };
@@ -866,21 +1160,22 @@ function buildAutomaticStageMoveset(
     styleLabel: flavor.styleLabel,
     elementTag: flavor.elementTag,
     accentColor: char.auraColor || '#38BDF8',
+    energy,
     physical: {
       name: stageIndex === 0 ? 'Combo Marcial' : `Ráfaga ${tierLabel}`,
-      effect: 'Golpes consecutivos · +30% Ki',
+      effect: `Golpes consecutivos · +30% ${energy.shortName}`,
     },
     special: {
       name: `Impacto ${flavor.elementTag}`,
-      effect: `40% Ki · Golpe cargado de ${flavor.energy}`,
+      effect: `40% ${energy.shortName} · Golpe cargado de ${flavor.energy}`,
     },
     guard: {
       name: 'Guardia de Combate',
-      effect: 'Bloqueo + contraataque · +8% HP',
+      effect: `Bloqueo + ${energy.chargeLabel} · +8% HP`,
     },
     ultimate: {
       name: `Golpe Supremo: ${shortStage}`,
-      effect: `100% Ki · Choque de Ki definitivo`,
+      effect: `100% ${energy.shortName} · ${energy.clashLabel} definitivo`,
     },
     isFallback: true,
   };
@@ -897,15 +1192,21 @@ export function getCharacterPhaseMoveset(
     const genericChar: CharacterDef = {
       id: charId || 'guerrero',
       name: cleanStage,
-      anime: 'Shonen',
+      anime: '',
       auraColor: '#38BDF8',
       icon: '⚡',
       gender: 'M',
       stages: [{ levelReq: 1, phase: cleanStage }],
     };
-    return buildAutomaticStageMoveset(genericChar, 0, cleanStage);
+    return buildAutomaticStageMoveset(
+      genericChar,
+      0,
+      cleanStage,
+      DEFAULT_ENERGY_PROFILE
+    );
   }
   const char = found;
+  const energy = getAnimeEnergyProfile(char.anime, char.id);
   let stageIdx = 0;
   let stageName = char.stages[0]?.phase || 'Guerrero Base';
 
@@ -947,16 +1248,17 @@ export function getCharacterPhaseMoveset(
         styleLabel: custom.styleLabel,
         elementTag: custom.elementTag,
         accentColor: char.auraColor || '#FACC15',
-        physical: chosen.physical,
-        special: chosen.special,
-        guard: chosen.guard,
-        ultimate: chosen.ultimate,
+        energy,
+        physical: localizeMoveSkillEnergy(chosen.physical, energy),
+        special: localizeMoveSkillEnergy(chosen.special, energy),
+        guard: localizeMoveSkillEnergy(chosen.guard, energy),
+        ultimate: localizeMoveSkillEnergy(chosen.ultimate, energy),
         isFallback: false,
       };
     }
   }
 
-  return buildAutomaticStageMoveset(char, stageIdx, stageName);
+  return buildAutomaticStageMoveset(char, stageIdx, stageName, energy);
 }
 
 /**

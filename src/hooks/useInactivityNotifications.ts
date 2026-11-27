@@ -131,11 +131,39 @@ function getLatestProfileActivityMs(
   return latest;
 }
 
+async function requestBrowserNotificationPermission(): Promise<NotificationPermission> {
+  if (typeof window === 'undefined' || !('Notification' in window)) {
+    return 'denied';
+  }
+  try {
+    const maybePromise = Notification.requestPermission();
+    if (
+      maybePromise &&
+      typeof (maybePromise as Promise<NotificationPermission>).then === 'function'
+    ) {
+      return await maybePromise;
+    }
+  } catch {
+    try {
+      return await new Promise<NotificationPermission>((resolve) => {
+        Notification.requestPermission((perm) => resolve(perm));
+      });
+    } catch {
+      return Notification.permission;
+    }
+  }
+  return Notification.permission;
+}
+
 async function showNotificationThroughPWA(
   title: string,
   body: string
 ): Promise<boolean> {
-  if (typeof window === 'undefined' || !('Notification' in window)) {
+  if (
+    typeof window === 'undefined' ||
+    !('Notification' in window) ||
+    window.isSecureContext === false
+  ) {
     return false;
   }
   if (Notification.permission !== 'granted') {
@@ -187,7 +215,9 @@ export function useInactivityNotifications({
   onNotify,
 }: UseInactivityNotificationsOptions) {
   const supported =
-    typeof window !== 'undefined' && 'Notification' in window;
+    typeof window !== 'undefined' &&
+    'Notification' in window &&
+    window.isSecureContext !== false;
 
   const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>(() =>
     supported ? Notification.permission : 'unsupported'
@@ -209,13 +239,43 @@ export function useInactivityNotifications({
     void writeReminderStateToIDB(next);
   }, []);
 
-  // Sync permission state if changed in browser settings
+  const refreshPermission = useCallback((): NotificationPermission | 'unsupported' => {
+    if (!supported) {
+      setPermission('unsupported');
+      return 'unsupported';
+    }
+    const current = Notification.permission;
+    setPermission(current);
+    return current;
+  }, [supported]);
+
+  // Sync permission state if changed in browser or Android/iOS system settings
   useEffect(() => {
-    if (!supported) return;
+    if (!supported) {
+      setPermission('unsupported');
+      return;
+    }
     const syncPerm = () => setPermission(Notification.permission);
     syncPerm();
     document.addEventListener('visibilitychange', syncPerm);
-    return () => document.removeEventListener('visibilitychange', syncPerm);
+    window.addEventListener('focus', syncPerm);
+
+    let permStatus: PermissionStatus | null = null;
+    if (navigator.permissions?.query) {
+      void navigator.permissions
+        .query({ name: 'notifications' as PermissionName })
+        .then((status) => {
+          permStatus = status;
+          status.addEventListener?.('change', syncPerm);
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      document.removeEventListener('visibilitychange', syncPerm);
+      window.removeEventListener('focus', syncPerm);
+      permStatus?.removeEventListener?.('change', syncPerm);
+    };
   }, [supported]);
 
   // Track genuine user activity updates (workouts, active workout, story chapters, steps/sleep increases)
@@ -379,13 +439,63 @@ export function useInactivityNotifications({
     };
   }, [user, supported, persisted.enabled, persisted.lastActivityAt, permission, persistAll]);
 
+  const enableReminderState = useCallback(() => {
+    const baseActivity =
+      persisted.lastActivityAt > 0
+        ? persisted.lastActivityAt
+        : Math.max(getLatestProfileActivityMs(user, activeWorkout), Date.now());
+
+    const next: ReminderPersistedState = {
+      enabled: true,
+      username: user?.username,
+      lastActivityAt: baseActivity,
+      lastNotifiedAt: persisted.lastNotifiedAt,
+    };
+    persistAll(next);
+  }, [persisted.lastActivityAt, persisted.lastNotifiedAt, user, activeWorkout, persistAll]);
+
+  const requestNotificationPermission = useCallback(async (): Promise<
+    NotificationPermission | 'unsupported'
+  > => {
+    if (!supported) {
+      setPermission('unsupported');
+      onNotify?.(
+        'Este navegador o dispositivo no soporta notificaciones web locales.'
+      );
+      return 'unsupported';
+    }
+
+    let currentPerm = Notification.permission;
+    if (currentPerm === 'default') {
+      currentPerm = await requestBrowserNotificationPermission();
+    }
+    setPermission(currentPerm);
+
+    if (currentPerm === 'granted') {
+      enableReminderState();
+      onNotify?.(
+        '🔔 ¡Notificaciones activadas! Recibirás recordatorios si pasas 24 horas sin actividad.'
+      );
+    } else if (currentPerm === 'denied') {
+      onNotify?.(
+        'El permiso de notificaciones está bloqueado en el dispositivo o navegador.'
+      );
+    } else {
+      onNotify?.(
+        'No se completó el permiso. Toca "Activar notificaciones" para intentarlo de nuevo.'
+      );
+    }
+    return currentPerm;
+  }, [supported, enableReminderState, onNotify]);
+
   const toggleNotifications = useCallback(async () => {
     if (!supported) {
+      setPermission('unsupported');
       onNotify?.('Tu navegador no soporta notificaciones locales.');
       return;
     }
 
-    if (persisted.enabled) {
+    if (persisted.enabled && Notification.permission === 'granted') {
       const next: ReminderPersistedState = {
         ...persisted,
         enabled: false,
@@ -404,59 +514,27 @@ export function useInactivityNotifications({
       return;
     }
 
-    let currentPerm = Notification.permission;
-    if (currentPerm === 'default') {
-      try {
-        currentPerm = await Notification.requestPermission();
-        setPermission(currentPerm);
-      } catch {
-        currentPerm = Notification.permission;
-      }
-    }
-
-    if (currentPerm !== 'granted') {
-      onNotify?.(
-        'Permiso de notificaciones bloqueado. Habilítalo en los ajustes del navegador para recibir recordatorios.'
-      );
-      return;
-    }
-
-    const baseActivity =
-      persisted.lastActivityAt > 0
-        ? persisted.lastActivityAt
-        : Math.max(getLatestProfileActivityMs(user, activeWorkout), Date.now());
-
-    const next: ReminderPersistedState = {
-      enabled: true,
-      username: user?.username,
-      lastActivityAt: baseActivity,
-      lastNotifiedAt: persisted.lastNotifiedAt,
-    };
-    persistAll(next);
-    onNotify?.(
-      '🔔 Recordatorio activado: te avisaremos si pasas 24 horas sin actividad.'
-    );
-  }, [supported, persisted, user, activeWorkout, persistAll, onNotify]);
+    await requestNotificationPermission();
+  }, [supported, persisted, user?.username, persistAll, onNotify, requestNotificationPermission]);
 
   const sendTestNotification = useCallback(async () => {
     if (!supported) {
+      setPermission('unsupported');
       onNotify?.('Tu navegador no soporta notificaciones locales.');
       return;
     }
 
     let currentPerm = Notification.permission;
     if (currentPerm === 'default') {
-      try {
-        currentPerm = await Notification.requestPermission();
-        setPermission(currentPerm);
-      } catch {
-        currentPerm = Notification.permission;
-      }
+      currentPerm = await requestBrowserNotificationPermission();
     }
+    setPermission(currentPerm);
 
     if (currentPerm !== 'granted') {
       onNotify?.(
-        'Acepta el permiso de notificaciones del navegador para probar el aviso.'
+        currentPerm === 'denied'
+          ? 'Notificaciones bloqueadas. Habilítalas en los ajustes del sistema o navegador.'
+          : 'Acepta el permiso de notificaciones del navegador para probar el aviso.'
       );
       return;
     }
@@ -487,6 +565,8 @@ export function useInactivityNotifications({
     periodicSyncActive,
     lastActivityAt: persisted.lastActivityAt || null,
     hoursSinceActivity,
+    requestNotificationPermission,
+    refreshPermission,
     toggleNotifications,
     sendTestNotification,
   };

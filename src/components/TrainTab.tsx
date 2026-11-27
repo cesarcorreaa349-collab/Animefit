@@ -89,6 +89,8 @@ interface TrainTabProps {
   reminderPermission: NotificationPermission | 'unsupported';
   reminderEnabled: boolean;
   hoursSinceActivity: number | null;
+  onRequestReminderPermission: () => void | Promise<unknown>;
+  onRefreshReminderPermission: () => void;
   onToggleReminder: () => void;
   onTestReminder: () => void;
   onToast: (msg: string) => void;
@@ -148,6 +150,8 @@ export function TrainTab({
   reminderPermission,
   reminderEnabled,
   hoursSinceActivity,
+  onRequestReminderPermission,
+  onRefreshReminderPermission,
   onToggleReminder,
   onTestReminder,
   onToast,
@@ -1477,6 +1481,8 @@ export function TrainTab({
         reminderPermission={reminderPermission}
         reminderEnabled={reminderEnabled}
         hoursSinceActivity={hoursSinceActivity}
+        onRequestReminderPermission={onRequestReminderPermission}
+        onRefreshReminderPermission={onRefreshReminderPermission}
         onToggleReminder={onToggleReminder}
         onTestReminder={onTestReminder}
         onUpdateWellness={onUpdateWellness}

@@ -12,6 +12,7 @@ import {
   Trophy,
   Zap,
 } from 'lucide-react';
+import { getCharacterEnergyProfile } from '../data/movesets';
 import { STORY_CHAPTERS } from '../data/storyCampaign';
 import {
   StoryAlignmentKey,
@@ -61,6 +62,7 @@ export function StoryTab({
   const lv = getLevelInfo(user.xp);
   const st = getCharacterStage(user.charId, lv.level);
   const warrior = st.char;
+  const warriorEnergy = getCharacterEnergyProfile(warrior.id);
 
   const validRoutines = useMemo(
     () => (user.routines || []).filter((r) => r.exercises.length > 0),
@@ -445,7 +447,7 @@ export function StoryTab({
     setBattleLog((prev) => [
       isCrit
         ? `⚡ ¡CRÍTICO de ${warrior.name}! -${dmg} HP.`
-        : `👊 Golpe de Ki conectado: -${dmg} HP.`,
+        : `👊 Golpe de ${warriorEnergy.shortName} conectado: -${dmg} HP.`,
       ...prev.slice(0, 5),
     ]);
 
@@ -466,7 +468,7 @@ export function StoryTab({
     setPlayerHp(nextHp);
     setAura((a) => Math.min(100, a + 20));
     setBattleLog((prev) => [
-      `🛡️ Postura de Guardia (+${heal} HP, +20% Aura).`,
+      `🛡️ ${warriorEnergy.chargeLabel} (+${heal} HP, +20% ${warriorEnergy.shortName}).`,
       ...prev.slice(0, 5),
     ]);
     runBossTurn(activeChapter, nextHp, true, bossCharging);
@@ -550,13 +552,18 @@ export function StoryTab({
                     />
                   </div>
                   <div className="flex justify-between text-[11px] font-bold tabular-nums mt-1.5 mb-0.5">
-                    <span className="text-[#FACC15]">Aura Ki</span>
+                    <span className="truncate" style={{ color: warriorEnergy.color }}>
+                      {warriorEnergy.barLabel}
+                    </span>
                     <span>{aura}%</span>
                   </div>
                   <div className="h-2 rounded-full bg-[#030406] border border-[#1B1E26] overflow-hidden">
                     <div
-                      className="h-full bg-gradient-to-r from-[#38BDF8] to-[#FACC15] transition-all duration-300"
-                      style={{ width: `${aura}%` }}
+                      className="h-full transition-all duration-300"
+                      style={{
+                        width: `${aura}%`,
+                        background: `linear-gradient(90deg, ${warriorEnergy.barGradientFrom}, ${warriorEnergy.barGradientTo})`,
+                      }}
                     />
                   </div>
                 </div>
@@ -720,7 +727,7 @@ export function StoryTab({
                   onClick={handleTapClash}
                   className="min-h-[60px] w-full rounded-xl bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] font-black text-base active:scale-95 transition-transform shadow-[0_0_20px_rgba(29,78,216,0.35)]"
                 >
-                  ⚡ ¡IMPULSAR KI! ({Math.round(clashPower)}%)
+                  ⚡ ¡{warriorEnergy.chargeLabel.toUpperCase()}! ({Math.round(clashPower)}%)
                 </button>
               </div>
             ) : (
@@ -732,7 +739,7 @@ export function StoryTab({
                   className="min-h-[50px] px-4 rounded-xl bg-[#101218] border border-[#38BDF8]/50 text-[#F1F5F9] font-extrabold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
                 >
                   <Swords className="w-4 h-4 text-[#38BDF8]" />
-                  Golpe de Ki
+                  Golpe de {warriorEnergy.shortName}
                 </button>
 
                 <button

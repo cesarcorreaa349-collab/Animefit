@@ -548,6 +548,8 @@ interface PvpFighterState {
   aura: number;
   guarding: boolean;
   auraColor?: string;
+  energyName?: string;
+  energyColor?: string;
   ultBoostPct?: number;
   streakLabel?: string | null;
   streakCount?: number;
@@ -659,6 +661,8 @@ function buildFighterState(seed: FighterSeed): PvpFighterState {
     aura: Math.min(50, 35 + bonus.bonusAura),
     guarding: false,
     auraColor: moveset.accentColor,
+    energyName: moveset.energy.name,
+    energyColor: moveset.energy.color,
     ultBoostPct: bonus.ultBoostPct,
     streakLabel: bonus.badgeLabel,
     streakCount: bonus.streakCount,
@@ -2000,7 +2004,7 @@ async function startServer() {
         finishMatch(
           match,
           defender.username,
-          `🏆 ¡${defender.username} remontó el Choque de Ki y venció!`,
+          `🏆 ¡${defender.username} remontó el ${initiatorMoveset.energy.clashLabel} y venció!`,
           ev
         );
         return;
@@ -2319,6 +2323,7 @@ async function startServer() {
           attacker.stageName
         );
         const accentColor = attacker.auraColor || attackerMoveset.accentColor;
+        const attackerEnergy = attackerMoveset.energy;
 
         if (action === 'strike') {
           const isCrit = Math.random() < attacker.critChance;
@@ -2334,11 +2339,11 @@ async function startServer() {
             (match.damageDealt[attacker.username] || 0) + dmg;
 
           let logLine = isCrit
-            ? `⚡ ¡CRÍTICO con ${attackerMoveset.physical.name} de ${attacker.username}! -${dmg} HP a ${defender.username}.`
-            : `👊 ${attacker.username} ejecutó ${attackerMoveset.physical.name} (-${dmg} HP).`;
+            ? `⚡ ¡CRÍTICO con ${attackerMoveset.physical.name} de ${attacker.username}! -${dmg} HP (+30% ${attackerEnergy.shortName}).`
+            : `👊 ${attacker.username} ejecutó ${attackerMoveset.physical.name} (-${dmg} HP, +30% ${attackerEnergy.shortName}).`;
           let evLabel = isCrit
-            ? `⚡ ¡CRÍTICO · ${attackerMoveset.physical.name}! -${dmg} HP (+30% Ki)`
-            : `👊 ${attackerMoveset.physical.name}: -${dmg} HP (+30% Ki)`;
+            ? `⚡ ¡CRÍTICO · ${attackerMoveset.physical.name}! -${dmg} HP (+30% ${attackerEnergy.shortName})`
+            : `👊 ${attackerMoveset.physical.name}: -${dmg} HP (+30% ${attackerEnergy.shortName})`;
 
           if (wasGuarding) {
             const counter = Math.round(defender.baseAtk * 0.5);
@@ -2408,13 +2413,13 @@ async function startServer() {
 
           const skillName = attackerMoveset.special.name;
           const evLabel = isCrit
-            ? `✨ ¡CRÍTICO · ${skillName}! -${dmg} HP`
+            ? `✨ ¡CRÍTICO · ${skillName}! -${dmg} HP (-40% ${attackerEnergy.shortName})`
             : wasGuarding
             ? `✨ ¡${skillName} atravesó la guardia! -${dmg} HP`
-            : `✨ ${skillName}: -${dmg} HP`;
+            : `✨ ${skillName}: -${dmg} HP (-40% ${attackerEnergy.shortName})`;
           const logLine = `✨ ${attacker.username} usó ${skillName}${
             isCrit ? ' (CRÍTICO)' : ''
-          } contra ${defender.username} (-${dmg} HP).`;
+          } contra ${defender.username} (-${dmg} HP, -40% ${attackerEnergy.shortName}).`;
 
           const ev: PvpCombatEvent = {
             id: makeEventId(),
@@ -2461,11 +2466,11 @@ async function startServer() {
             auraGain: 20,
             skillName: guardName,
             auraColor: accentColor,
-            label: `🛡️ ${guardName}: +${heal} HP · +20% Ki`,
+            label: `🛡️ ${guardName}: ${attackerEnergy.chargeLabel} (+${heal} HP · +20% ${attackerEnergy.shortName})`,
           };
           match.lastEvent = ev;
           match.log = [
-            `🛡️ ${attacker.username} activó ${guardName} (+${heal} HP, +20% Ki).`,
+            `🛡️ ${attacker.username} activó ${guardName} (${attackerEnergy.chargeLabel}: +${heal} HP, +20% ${attackerEnergy.shortName}).`,
             ...match.log.slice(0, 7),
           ];
           match.turn = opponentName;
@@ -2500,7 +2505,7 @@ async function startServer() {
             },
           };
           match.log = [
-            `🔥 ¡${attacker.username} desató ${ultName}! ¡Toquen rápido para ganar el Choque de Ki!`,
+            `🔥 ¡${attacker.username} desató ${ultName}! ¡Toquen rápido para ganar el ${attackerEnergy.clashLabel}!`,
             ...match.log.slice(0, 7),
           ];
           broadcastMatch(match);

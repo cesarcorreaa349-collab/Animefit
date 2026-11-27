@@ -264,6 +264,21 @@ export function PvpTab({
     const myMoveset = me
       ? getCharacterPhaseMoveset(me.charId, me.level, me.stageName)
       : lobbyMoveset;
+    const myEnergy = myMoveset.energy;
+    const rivalMoveset = rival
+      ? getCharacterPhaseMoveset(rival.charId, rival.level, rival.stageName)
+      : lobbyMoveset;
+    const rivalEnergy = rivalMoveset.energy;
+    const clashInitiator = activeMatch.clash
+      ? activeMatch.players[activeMatch.clash.initiator]
+      : null;
+    const clashEnergy = clashInitiator
+      ? getCharacterPhaseMoveset(
+          clashInitiator.charId,
+          clashInitiator.level,
+          clashInitiator.stageName
+        ).energy
+      : myEnergy;
     const myTotalDamage = activeMatch.damageDealt?.[currentUser.username] ?? 0;
     const rivalTotalDamage = activeMatch.damageDealt?.[rivalName] ?? 0;
     const myXpEarned =
@@ -494,13 +509,18 @@ export function PvpTab({
                     />
                   </div>
                   <div className="flex justify-between text-[11px] font-bold tabular-nums mt-1.5 mb-0.5">
-                    <span className="text-[#FACC15]">Aura Ki</span>
+                    <span className="truncate" style={{ color: myEnergy.color }}>
+                      {myEnergy.barLabel}
+                    </span>
                     <span>{me.aura}%</span>
                   </div>
                   <div className="h-2 rounded-full bg-[#030406] border border-[#1B1E26] overflow-hidden">
                     <div
-                      className="h-full bg-gradient-to-r from-[#38BDF8] to-[#FACC15] transition-all duration-300"
-                      style={{ width: `${me.aura}%` }}
+                      className="h-full transition-all duration-300"
+                      style={{
+                        width: `${me.aura}%`,
+                        background: `linear-gradient(90deg, ${myEnergy.barGradientFrom}, ${myEnergy.barGradientTo})`,
+                      }}
                     />
                   </div>
                   {me.guarding && (
@@ -557,13 +577,18 @@ export function PvpTab({
                     />
                   </div>
                   <div className="flex justify-between text-[11px] font-bold tabular-nums mt-1.5 mb-0.5">
-                    <span className="text-[#FACC15]">Aura Ki</span>
+                    <span className="truncate" style={{ color: rivalEnergy.color }}>
+                      {rivalEnergy.barLabel}
+                    </span>
                     <span>{rival.aura}%</span>
                   </div>
                   <div className="h-2 rounded-full bg-[#030406] border border-[#1B1E26] overflow-hidden">
                     <div
-                      className="h-full bg-gradient-to-r from-[#38BDF8] to-[#FACC15] transition-all duration-300"
-                      style={{ width: `${rival.aura}%` }}
+                      className="h-full transition-all duration-300"
+                      style={{
+                        width: `${rival.aura}%`,
+                        background: `linear-gradient(90deg, ${rivalEnergy.barGradientFrom}, ${rivalEnergy.barGradientTo})`,
+                      }}
                     />
                   </div>
                   {rival.guarding && (
@@ -581,9 +606,15 @@ export function PvpTab({
         {activeMatch.status === 'active' ? (
           <section className="bg-[#0A0B0F] border border-[#1B1E26] rounded-2xl p-4 sm:p-5 flex flex-col gap-3.5">
             {activeMatch.clash ? (
-              <div className="rounded-2xl bg-[#07080B] border-2 border-[#FACC15] p-4 text-center flex flex-col gap-3">
-                <div className="text-sm font-black text-[#FACC15]">
-                  ⚡ ¡CHOQUE DE KI EN VIVO! ({myTaps} vs {rivalTaps})
+              <div
+                className="rounded-2xl bg-[#07080B] border-2 p-4 text-center flex flex-col gap-3"
+                style={{ borderColor: clashEnergy.color }}
+              >
+                <div
+                  className="text-sm font-black uppercase"
+                  style={{ color: clashEnergy.color }}
+                >
+                  ⚡ ¡{clashEnergy.clashLabel} EN VIVO! ({myTaps} vs {rivalTaps})
                 </div>
                 <div className="text-xs text-[#8A92A2] tabular-nums">
                   ¡Toca más rápido que {rivalName}! Tiempo:{' '}
@@ -591,8 +622,11 @@ export function PvpTab({
                 </div>
                 <div className="h-5 rounded-full bg-[#101218] border border-[#1B1E26] overflow-hidden relative">
                   <div
-                    className="h-full bg-gradient-to-r from-[#22C55E] to-[#FACC15] transition-all duration-75"
-                    style={{ width: `${clashBalancePct}%` }}
+                    className="h-full transition-all duration-75"
+                    style={{
+                      width: `${clashBalancePct}%`,
+                      background: `linear-gradient(90deg, #22C55E, ${clashEnergy.color})`,
+                    }}
                   />
                 </div>
                 <button
@@ -603,7 +637,7 @@ export function PvpTab({
                   }}
                   className="min-h-[62px] w-full rounded-xl bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] font-black text-base active:scale-95 transition-transform shadow-[0_0_20px_rgba(29,78,216,0.35)]"
                 >
-                  ⚡ ¡IMPULSAR KI! ({myTaps} toques)
+                  ⚡ ¡{myEnergy.chargeLabel.toUpperCase()}! ({myTaps} toques)
                 </button>
               </div>
             ) : (
@@ -665,7 +699,7 @@ export function PvpTab({
                       <span className="truncate">{myMoveset.physical.name}</span>
                     </span>
                     <span className="text-[10px] font-semibold text-[#38BDF8]">
-                      Físico · +30% Ki
+                      Físico · +30% {myEnergy.shortName}
                     </span>
                   </button>
 
@@ -693,11 +727,11 @@ export function PvpTab({
                     </span>
                     <span
                       className="text-[10px] font-semibold"
-                      style={{ color: myMoveset.accentColor }}
+                      style={{ color: myEnergy.color }}
                     >
                       {(me?.aura || 0) >= 40
-                        ? 'Especial · -40% Ki'
-                        : `Especial (40% Ki)`}
+                        ? `Especial · -40% ${myEnergy.shortName}`
+                        : `Especial (40% ${myEnergy.shortName})`}
                     </span>
                   </button>
 
@@ -714,8 +748,8 @@ export function PvpTab({
                       <Shield className="w-3.5 h-3.5 text-[#22C55E] shrink-0" />
                       <span className="truncate">{myMoveset.guard.name}</span>
                     </span>
-                    <span className="text-[10px] font-semibold text-[#22C55E]">
-                      +8% HP · +20% Ki
+                    <span className="text-[10px] font-semibold text-[#22C55E] truncate max-w-full">
+                      {myEnergy.chargeLabel} · +8% HP · +20%
                     </span>
                   </button>
 
@@ -736,10 +770,10 @@ export function PvpTab({
                       <Flame className="w-3.5 h-3.5 shrink-0" />
                       <span className="truncate">{myMoveset.ultimate.name}</span>
                     </span>
-                    <span className="text-[10px] font-semibold opacity-90">
+                    <span className="text-[10px] font-semibold opacity-90 truncate max-w-full">
                       {(me?.aura || 0) >= 100
-                        ? 'Definitiva · Choque'
-                        : `Definitiva (${me?.aura || 0}%)`}
+                        ? `Definitiva · ${myEnergy.clashLabel}`
+                        : `Definitiva (${me?.aura || 0}% ${myEnergy.shortName})`}
                     </span>
                   </button>
                 </div>
@@ -877,7 +911,11 @@ export function PvpTab({
                 {currentUser.username} · {st.char.name}
               </h2>
               <p className="text-xs text-[#8A92A2] mt-0.5 tabular-nums">
-                Nv.{lv.level} · {st.stageName} · HP {myMaxHp} · ATK {myBaseAtk} ·{' '}
+                Nv.{lv.level} · {st.stageName} ·{' '}
+                <span className="font-bold" style={{ color: lobbyMoveset.energy.color }}>
+                  {lobbyMoveset.energy.name}
+                </span>{' '}
+                · HP {myMaxHp} · ATK {myBaseAtk} ·{' '}
                 <span className="text-[#22C55E] font-bold">
                   {currentUser.pvpWins || 0}V
                 </span>{' '}
@@ -889,7 +927,7 @@ export function PvpTab({
               {lobbyTrainingBonus.badgeLabel && (
                 <p className="text-[11px] font-bold text-[#FACC15] mt-1 tabular-nums">
                   🔥 Bono de entreno: {lobbyTrainingBonus.badgeLabel} · +
-                  {lobbyTrainingBonus.bonusAura}% Ki inicial · +
+                  {lobbyTrainingBonus.bonusAura}% {lobbyMoveset.energy.shortName} inicial · +
                   {lobbyTrainingBonus.ultBoostPct}% Definitiva
                 </p>
               )}

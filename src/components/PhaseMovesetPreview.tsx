@@ -10,10 +10,11 @@ export function PhaseMovesetPreview({
   moveset,
   compact = false,
 }: PhaseMovesetPreviewProps) {
+  const energy = moveset.energy;
   const slots = [
     {
       key: 'physical',
-      slotLabel: 'Ataque físico · +30% Ki',
+      slotLabel: `Ataque físico · +30% ${energy.shortName}`,
       name: moveset.physical.name,
       effect: moveset.physical.effect,
       icon: Swords,
@@ -21,7 +22,7 @@ export function PhaseMovesetPreview({
     },
     {
       key: 'special',
-      slotLabel: 'Técnica especial · 40% Ki',
+      slotLabel: `Técnica especial · 40% ${energy.shortName}`,
       name: moveset.special.name,
       effect: moveset.special.effect,
       icon: Sparkles,
@@ -29,7 +30,7 @@ export function PhaseMovesetPreview({
     },
     {
       key: 'guard',
-      slotLabel: 'Defensa · +8% HP',
+      slotLabel: `Defensa · ${energy.chargeLabel} (+20%)`,
       name: moveset.guard.name,
       effect: moveset.guard.effect,
       icon: Shield,
@@ -37,7 +38,7 @@ export function PhaseMovesetPreview({
     },
     {
       key: 'ultimate',
-      slotLabel: 'Definitiva · 100% Ki',
+      slotLabel: `Definitiva · 100% ${energy.shortName}`,
       name: moveset.ultimate.name,
       effect: moveset.ultimate.effect,
       icon: Flame,
@@ -53,7 +54,10 @@ export function PhaseMovesetPreview({
           <span style={{ color: moveset.accentColor }}>{moveset.stageName}</span>
         </div>
         <div className="text-[11px] font-semibold text-[#8A92A2]">
-          {moveset.styleLabel} · {moveset.elementTag}
+          {moveset.styleLabel} ·{' '}
+          <span className="font-bold" style={{ color: energy.color }}>
+            {energy.name}
+          </span>
         </div>
       </div>
 

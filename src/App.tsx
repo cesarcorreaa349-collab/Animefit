@@ -1728,6 +1728,8 @@ export default function App() {
             reminderPermission={inactivityReminder.permission}
             reminderEnabled={inactivityReminder.enabled}
             hoursSinceActivity={inactivityReminder.hoursSinceActivity}
+            onRequestReminderPermission={inactivityReminder.requestNotificationPermission}
+            onRefreshReminderPermission={inactivityReminder.refreshPermission}
             onToggleReminder={inactivityReminder.toggleNotifications}
             onTestReminder={inactivityReminder.sendTestNotification}
             onToast={pushToast}
@@ -1782,6 +1784,8 @@ export default function App() {
             reminderPermission={inactivityReminder.permission}
             reminderEnabled={inactivityReminder.enabled}
             hoursSinceActivity={inactivityReminder.hoursSinceActivity}
+            onRequestReminderPermission={inactivityReminder.requestNotificationPermission}
+            onRefreshReminderPermission={inactivityReminder.refreshPermission}
             onToggleReminder={inactivityReminder.toggleNotifications}
             onTestReminder={inactivityReminder.sendTestNotification}
           />

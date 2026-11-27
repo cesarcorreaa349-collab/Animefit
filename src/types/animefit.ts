@@ -235,11 +235,23 @@ export interface MoveSkillDef {
   effect: string;
 }
 
+export interface CharacterEnergyProfile {
+  name: string;
+  shortName: string;
+  barLabel: string;
+  chargeLabel: string;
+  clashLabel: string;
+  color: string;
+  barGradientFrom: string;
+  barGradientTo: string;
+}
+
 export interface PhaseMoveset {
   stageName: string;
   styleLabel: string;
   elementTag: string;
   accentColor: string;
+  energy: CharacterEnergyProfile;
   physical: MoveSkillDef;
   special: MoveSkillDef;
   guard: MoveSkillDef;
@@ -267,6 +279,8 @@ export interface PvpFighterState {
   aura: number;
   guarding: boolean;
   auraColor?: string;
+  energyName?: string;
+  energyColor?: string;
   ultBoostPct?: number;
   streakLabel?: string | null;
   streakCount?: number;
