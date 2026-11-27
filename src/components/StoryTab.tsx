@@ -12,7 +12,7 @@ import {
   Trophy,
   Zap,
 } from 'lucide-react';
-import { getCharacterEnergyProfile } from '../data/movesets';
+import { getCharacterEnergyProfile, getCharacterPhaseMoveset } from '../data/movesets';
 import { STORY_CHAPTERS } from '../data/storyCampaign';
 import {
   StoryAlignmentKey,
@@ -62,7 +62,12 @@ export function StoryTab({
   const lv = getLevelInfo(user.xp);
   const st = getCharacterStage(user.charId, lv.level);
   const warrior = st.char;
-  const warriorEnergy = getCharacterEnergyProfile(warrior.id);
+  const warriorMoveset = getCharacterPhaseMoveset(
+    warrior.id,
+    lv.level,
+    st.stageName
+  );
+  const warriorEnergy = warriorMoveset.energy;
 
   const validRoutines = useMemo(
     () => (user.routines || []).filter((r) => r.exercises.length > 0),
@@ -147,11 +152,15 @@ export function StoryTab({
 
   const alignmentTitle = useMemo(() => {
     const { honor, fury, strategy } = story.alignment;
-    if (honor === 0 && fury === 0 && strategy === 0) return 'Aprendiz del Ki';
+    if (honor === 0 && fury === 0 && strategy === 0) {
+      return warriorEnergy.name === 'Ki'
+        ? 'Aprendiz del Ki'
+        : `Aprendiz de ${warriorEnergy.name}`;
+    }
     if (honor >= fury && honor >= strategy) return 'Guardián Honorable';
     if (fury >= honor && fury >= strategy) return 'Aura Indomable';
     return 'Estratega Supremo';
-  }, [story.alignment]);
+  }, [story.alignment, warriorEnergy.name]);
 
   const interpolate = (raw: string) =>
     raw
@@ -296,8 +305,9 @@ export function StoryTab({
         setBossCharging(true);
         setGuarding(false);
         setTurnBusy(false);
+        const bossEnergy = getCharacterEnergyProfile(boss.id);
         setBattleLog((prev) => [
-          `⚠️ ¡${boss.name} está concentrando energía para ${ch.bossSignatureMove}!`,
+          `⚠️ ¡${boss.name} está concentrando ${bossEnergy.name} para ${ch.bossSignatureMove}!`,
           ...prev.slice(0, 5),
         ]);
         return;
@@ -371,8 +381,8 @@ export function StoryTab({
           triggerShake('boss');
           setBattleLog((prev) => [
             won
-              ? `🔥 ¡CHOQUE GANADO! Técnica Definitiva de ${st.stageName}: -${dmg} HP!`
-              : `⚡ Técnica Definitiva conectada: -${dmg} HP.`,
+              ? `🔥 ¡${warriorEnergy.clashLabel.toUpperCase()} GANADO! ${warriorMoveset.ultimate.name} (${st.stageName}): -${dmg} HP!`
+              : `⚡ ${warriorMoveset.ultimate.name} conectada: -${dmg} HP.`,
             ...prev.slice(0, 5),
           ]);
           if (nextBossHp <= 0) {
@@ -446,8 +456,8 @@ export function StoryTab({
     triggerShake('boss');
     setBattleLog((prev) => [
       isCrit
-        ? `⚡ ¡CRÍTICO de ${warrior.name}! -${dmg} HP.`
-        : `👊 Golpe de ${warriorEnergy.shortName} conectado: -${dmg} HP.`,
+        ? `⚡ ¡CRÍTICO con ${warriorMoveset.physical.name}! -${dmg} HP (+30% ${warriorEnergy.shortName}).`
+        : `👊 ${warriorMoveset.physical.name}: -${dmg} HP (+30% ${warriorEnergy.shortName}).`,
       ...prev.slice(0, 5),
     ]);
 
@@ -468,7 +478,7 @@ export function StoryTab({
     setPlayerHp(nextHp);
     setAura((a) => Math.min(100, a + 20));
     setBattleLog((prev) => [
-      `🛡️ ${warriorEnergy.chargeLabel} (+${heal} HP, +20% ${warriorEnergy.shortName}).`,
+      `🛡️ ${warriorMoveset.guard.name} · ${warriorEnergy.chargeLabel} (+${heal} HP, +20% ${warriorEnergy.shortName}).`,
       ...prev.slice(0, 5),
     ]);
     runBossTurn(activeChapter, nextHp, true, bossCharging);
@@ -705,7 +715,7 @@ export function StoryTab({
                 <div className="text-sm font-black text-[#FACC15]">
                   ⚡{' '}
                   {clashKind === 'ultimate'
-                    ? '¡CHOQUE DE TÉCNICA DEFINITIVA!'
+                    ? `¡${warriorEnergy.clashLabel.toUpperCase()}: ${warriorMoveset.ultimate.name.toUpperCase()}!`
                     : `¡BLOQUEA ${activeChapter.bossSignatureMove}!`}
                 </div>
                 <div className="text-xs text-[#8A92A2] tabular-nums">
@@ -736,34 +746,38 @@ export function StoryTab({
                   type="button"
                   disabled={turnBusy}
                   onClick={handleStrike}
-                  className="min-h-[50px] px-4 rounded-xl bg-[#101218] border border-[#38BDF8]/50 text-[#F1F5F9] font-extrabold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
+                  className="min-w-0 min-h-[50px] px-4 rounded-xl bg-[#101218] border border-[#38BDF8]/50 text-[#F1F5F9] font-extrabold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
                 >
-                  <Swords className="w-4 h-4 text-[#38BDF8]" />
-                  Golpe de {warriorEnergy.shortName}
+                  <Swords className="w-4 h-4 text-[#38BDF8] shrink-0" />
+                  <span className="truncate">{warriorMoveset.physical.name}</span>
                 </button>
 
                 <button
                   type="button"
                   disabled={turnBusy}
                   onClick={handleGuard}
-                  className="min-h-[50px] px-4 rounded-xl bg-[#101218] border border-[#22C55E]/50 text-[#F1F5F9] font-extrabold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
+                  className="min-w-0 min-h-[50px] px-4 rounded-xl bg-[#101218] border border-[#22C55E]/50 text-[#F1F5F9] font-extrabold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
                 >
-                  <Shield className="w-4 h-4 text-[#22C55E]" />
-                  Guardia (+HP)
+                  <Shield className="w-4 h-4 text-[#22C55E] shrink-0" />
+                  <span className="truncate">{warriorMoveset.guard.name} (+HP)</span>
                 </button>
 
                 <button
                   type="button"
                   disabled={turnBusy || aura < 100}
                   onClick={handleUltimate}
-                  className={`min-h-[50px] px-4 rounded-xl font-black text-sm inline-flex items-center justify-center gap-2 active:scale-[0.98] ${
+                  className={`min-w-0 min-h-[50px] px-4 rounded-xl font-black text-sm inline-flex items-center justify-center gap-2 active:scale-[0.98] ${
                     aura >= 100
                       ? 'bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] shadow-[0_0_16px_rgba(29,78,216,0.28)]'
                       : 'bg-[#07080B] border border-[#1B1E26] text-[#8A92A2] opacity-60'
                   }`}
                 >
-                  <Flame className="w-4 h-4" />
-                  {aura >= 100 ? '¡Definitiva!' : `Definitiva (${aura}%)`}
+                  <Flame className="w-4 h-4 shrink-0" />
+                  <span className="truncate">
+                    {aura >= 100
+                      ? `¡${warriorMoveset.ultimate.name}!`
+                      : `${warriorMoveset.ultimate.name} (${aura}%)`}
+                  </span>
                 </button>
               </div>
             )}
