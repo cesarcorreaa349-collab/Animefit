@@ -33,9 +33,11 @@ import {
   getBestOneRmForExercise,
   getExerciseById,
   getLastExerciseSetsHistory,
+  reorderArrayItem,
 } from '../utils/animefit';
 import { PedometerStatus } from '../hooks/useAutoPedometer';
 import { CharacterAvatar } from './CharacterAvatar';
+import { DraggableExerciseStrip } from './DraggableExerciseStrip';
 import { ExerciseSvg } from './ExerciseSvg';
 import { Modal } from './Modal';
 import { RoutineBuilderOverlay } from './RoutineBuilderOverlay';
@@ -109,7 +111,8 @@ const MUSCLE_FILTERS: ('Todos' | ExerciseMuscle)[] = [
   'Piernas',
   'Glúteos',
   'Hombros',
-  'Brazos',
+  'Bíceps',
+  'Tríceps',
   'Abdomen',
   'Cardio',
 ];
@@ -179,6 +182,7 @@ export function TrainTab({
   const [builderOpen, setBuilderOpen] = useState(false);
   const [builderDraft, setBuilderDraft] = useState<Routine | null>(null);
   const [builderSelectedIdx, setBuilderSelectedIdx] = useState<number>(0);
+  const [activeSelectedIdx, setActiveSelectedIdx] = useState<number>(0);
 
   // Smart Routine Generator state
   const [aiOpen, setAiOpen] = useState(false);
@@ -540,7 +544,37 @@ export function TrainTab({
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+          <>
+            <DraggableExerciseStrip
+              items={activeWorkout.exercises}
+              user={user}
+              selectedIdx={Math.min(
+                activeSelectedIdx,
+                Math.max(0, activeWorkout.exercises.length - 1)
+              )}
+              onSelectIdx={(idx) => {
+                setActiveSelectedIdx(idx);
+                const cardEl = document.getElementById(`workout-ex-card-${idx}`);
+                if (cardEl) {
+                  cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+              }}
+              onReorder={(fromIdx, toIdx) => {
+                onUpdateActiveWorkout((prevW) => ({
+                  ...prevW,
+                  exercises: reorderArrayItem(prevW.exercises, fromIdx, toIdx),
+                }));
+                setActiveSelectedIdx((prev) => {
+                  if (prev === fromIdx) return toIdx;
+                  if (fromIdx < prev && toIdx >= prev) return prev - 1;
+                  if (fromIdx > prev && toIdx <= prev) return prev + 1;
+                  return prev;
+                });
+              }}
+              onAddClick={() => openSelector('active')}
+              addLabel="Añadir"
+            />
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
             {activeWorkout.exercises.map((item, exIdx) => {
               const ex = getExerciseById(item.exId, user);
               if (!ex) return null;
@@ -566,8 +600,14 @@ export function TrainTab({
 
               return (
                 <article
+                  id={`workout-ex-card-${exIdx}`}
                   key={`${item.exId}_${exIdx}`}
-                  className="bg-[#0A0B0F] border border-[#1B1E26] rounded-2xl p-4"
+                  onClick={() => setActiveSelectedIdx(exIdx)}
+                  className={`bg-[#0A0B0F] border rounded-2xl p-4 transition-colors ${
+                    activeSelectedIdx === exIdx
+                      ? 'border-[#38BDF8]/50'
+                      : 'border-[#1B1E26]'
+                  }`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
@@ -996,7 +1036,8 @@ export function TrainTab({
                 </article>
               );
             })}
-          </div>
+            </div>
+          </>
         )}
 
         <button

@@ -22,11 +22,20 @@ export function ExerciseSvg({ muscle }: ExerciseSvgProps) {
             <circle cx="128" cy="56" r="10" fill={highlight} />
           </>
         );
-      case 'Brazos':
+      case 'Bíceps':
         return (
           <>
-            <rect x="55" y="60" width="14" height="36" rx="6" fill={highlight} />
-            <rect x="131" y="60" width="14" height="36" rx="6" fill={highlight} />
+            <rect x="56" y="60" width="13" height="22" rx="6" fill={highlight} />
+            <rect x="131" y="60" width="13" height="22" rx="6" fill={highlight} />
+          </>
+        );
+      case 'Tríceps':
+        return (
+          <>
+            <rect x="54" y="58" width="14" height="30" rx="6" fill={highlight} />
+            <rect x="132" y="58" width="14" height="30" rx="6" fill={highlight} />
+            <rect x="57" y="63" width="6" height="20" rx="3" fill={body} opacity="0.45" />
+            <rect x="137" y="63" width="6" height="20" rx="3" fill={body} opacity="0.45" />
           </>
         );
       case 'Abdomen':
@@ -48,7 +57,12 @@ export function ExerciseSvg({ muscle }: ExerciseSvgProps) {
           />
         );
       default:
-        return <rect x="78" y="54" width="44" height="22" rx="6" fill={highlight} />;
+        return (
+          <>
+            <rect x="55" y="60" width="14" height="36" rx="6" fill={highlight} />
+            <rect x="131" y="60" width="14" height="36" rx="6" fill={highlight} />
+          </>
+        );
     }
   };
 

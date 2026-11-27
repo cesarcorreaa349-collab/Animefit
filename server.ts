@@ -6,6 +6,10 @@ import os from 'os';
 import path from 'path';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CHARACTERS } from './src/data/characters.ts';
+import {
+  computeTrainingPvpBonus,
+  getCharacterPhaseMoveset,
+} from './src/data/movesets.ts';
 import { SEED_GROUPS, SEED_USERS } from './src/data/exercises.ts';
 import type {
   CommunityGroup,
@@ -272,6 +276,13 @@ function clearSessionCookie(req: express.Request, res: express.Response): void {
 
 function isAllowedCorsOrigin(origin: string, serverHost?: string): boolean {
   try {
+    if (
+      origin.startsWith('capacitor://') ||
+      origin.startsWith('ionic://') ||
+      origin.startsWith('file://')
+    ) {
+      return true;
+    }
     const parsed = new URL(origin);
     if (serverHost && parsed.host === serverHost) return true;
     const configured = (process.env.ALLOWED_ORIGINS || '')
@@ -302,7 +313,7 @@ function verifyMutationOrigin(
 ): boolean {
   const origin = req.get('origin');
   const host = req.get('x-forwarded-host') || req.get('host');
-  if (origin) {
+  if (origin && origin !== 'null') {
     if (!isAllowedCorsOrigin(origin, host)) {
       res.status(403).json({ error: 'Origen no permitido' });
       return false;
@@ -536,6 +547,10 @@ interface PvpFighterState {
   critChance: number;
   aura: number;
   guarding: boolean;
+  auraColor?: string;
+  ultBoostPct?: number;
+  streakLabel?: string | null;
+  streakCount?: number;
 }
 
 interface PvpClashState {
@@ -544,15 +559,51 @@ interface PvpClashState {
   taps: Record<string, number>;
 }
 
+interface PvpPlayerConnectionStatus {
+  connected: boolean;
+  reconnectingUntil?: number | null;
+}
+
+interface PvpCombatEvent {
+  id: string;
+  actor: string;
+  target?: string;
+  action:
+    | 'strike'
+    | 'special'
+    | 'guard'
+    | 'ultimate'
+    | 'clash_win'
+    | 'clash_reflect'
+    | 'timeout'
+    | 'forfeit'
+    | 'disconnect';
+  damage?: number;
+  heal?: number;
+  auraGain?: number;
+  crit?: boolean;
+  blocked?: boolean;
+  skillName?: string;
+  auraColor?: string;
+  label: string;
+}
+
 interface PvpMatchState {
   id: string;
   status: 'active' | 'finished';
   turn: string;
+  turnEndsAt?: number;
+  turnDurationMs?: number;
   round: number;
   winner: string | null;
   players: Record<string, PvpFighterState>;
   playerOrder: [string, string];
+  playerStatus?: Record<string, PvpPlayerConnectionStatus>;
   clash: PvpClashState | null;
+  lastEvent?: PvpCombatEvent | null;
+  damageDealt?: Record<string, number>;
+  xpRewards?: Record<string, number>;
+  rematchRequestedBy?: string[];
   log: string[];
   rewardsGranted?: boolean;
 }
@@ -575,6 +626,7 @@ interface PvpRoom {
   code: string;
   hostUsername: string;
   createdAt: number;
+  hostDisconnectedAt?: number | null;
 }
 
 function buildFighterState(seed: FighterSeed): PvpFighterState {
@@ -584,6 +636,12 @@ function buildFighterState(seed: FighterSeed): PvpFighterState {
   const workoutsDone = dbUser ? Number(dbUser.workoutsDone || 0) : seed.workoutsDone;
   const prsCount = dbUser && dbUser.prs ? Object.keys(dbUser.prs).length : seed.prsCount;
   const charId = (dbUser?.charId as string) || seed.charId || 'goku';
+  const historyDates = Array.isArray(dbUser?.history)
+    ? dbUser.history.map((h) => String((h as { date?: unknown })?.date || ''))
+    : [];
+
+  const moveset = getCharacterPhaseMoveset(charId, level, seed.stageName);
+  const bonus = computeTrainingPvpBonus(workoutsDone, historyDates);
 
   const maxHp = Math.round(140 + level * 16 + workoutsDone * 4 + prsCount * 6);
   const baseAtk = Math.round(22 + level * 4 + Math.min(26, workoutsDone * 1.4));
@@ -592,14 +650,18 @@ function buildFighterState(seed: FighterSeed): PvpFighterState {
   return {
     username: seed.username,
     charId,
-    stageName: seed.stageName || 'Guerrero Base',
+    stageName: moveset.stageName || seed.stageName || 'Guerrero Base',
     level,
     hp: maxHp,
     maxHp,
     baseAtk,
     critChance,
-    aura: 35,
+    aura: Math.min(50, 35 + bonus.bonusAura),
     guarding: false,
+    auraColor: moveset.accentColor,
+    ultBoostPct: bonus.ultBoostPct,
+    streakLabel: bonus.badgeLabel,
+    streakCount: bonus.streakCount,
   };
 }
 
@@ -675,7 +737,7 @@ async function startServer() {
     });
   });
 
-  app.post('/api/auth/resume-pvp', (req, res) => {
+  const handleAutoHydrateProfile = (req: express.Request, res: express.Response) => {
     if (!verifyMutationOrigin(req, res)) return;
     res.setHeader('Cache-Control', 'no-store');
 
@@ -685,7 +747,7 @@ async function startServer() {
     };
     const incoming = body.profile;
     if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
-      res.status(400).json({ error: 'Perfil requerido para reconectar.' });
+      res.status(400).json({ error: 'Perfil requerido para sincronizar.' });
       return;
     }
 
@@ -708,10 +770,14 @@ async function startServer() {
     if (existingKey && db.users[existingKey]) {
       const existing = db.users[existingKey];
       const existingEmail = String(existing.email || '').trim().toLowerCase();
+      const hasRealExistingEmail =
+        Boolean(existingEmail) && !existingEmail.endsWith('@animefit.local');
+      const hasRealIncomingEmail =
+        Boolean(incomingEmail) && !incomingEmail.endsWith('@animefit.local');
       const emailMatches =
-        (existingEmail && incomingEmail && existingEmail === incomingEmail) ||
-        (!incomingEmail &&
-          (!existingEmail || existingEmail.endsWith('@animefit.local')));
+        !hasRealExistingEmail ||
+        !hasRealIncomingEmail ||
+        existingEmail === incomingEmail;
 
       if (!emailMatches) {
         res.status(403).json({
@@ -743,6 +809,7 @@ async function startServer() {
 
       res.json({
         ok: true,
+        hydrated: true,
         user: sanitizeSelfUser(merged),
         activeWorkout: db.activeWorkouts[existingKey] || null,
         groups: db.groups || [],
@@ -754,7 +821,7 @@ async function startServer() {
     }
 
     // Server memory/ephemeral disk was reset (e.g. Render cold start):
-    // rebuild the user record safely from the client's cached profile.
+    // silently recreate the full user record from the client's cached profile without password.
     const safeEmail =
       incomingEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(incomingEmail)
         ? incomingEmail
@@ -775,7 +842,7 @@ async function startServer() {
           ? (incoming.prs as Record<string, number>)
           : {},
       oneRmRecords: sanitizeOneRmRecordsPayload(incoming.oneRmRecords, {}),
-      history: Array.isArray(incoming.history) ? incoming.history.slice(-40) : [],
+      history: Array.isArray(incoming.history) ? incoming.history.slice(-80) : [],
       friends: Array.isArray(incoming.friends)
         ? incoming.friends
             .map((f) => resolveUsernameKey(db.users, String(f || '')))
@@ -823,6 +890,7 @@ async function startServer() {
 
     res.json({
       ok: true,
+      hydrated: true,
       user: sanitizeSelfUser(baseRecord),
       activeWorkout: db.activeWorkouts[rawUsername] || null,
       groups: db.groups || [],
@@ -830,7 +898,10 @@ async function startServer() {
       sessionToken: token,
       wsToken: signWsToken(rawUsername),
     });
-  });
+  };
+
+  app.post('/api/auth/auto-sync', handleAutoHydrateProfile);
+  app.post('/api/auth/resume-pvp', handleAutoHydrateProfile);
 
   app.post('/api/auth/login', (req, res) => {
     if (!verifyMutationOrigin(req, res)) return;
@@ -1611,12 +1682,40 @@ async function startServer() {
 
   const wss = new WebSocketServer({ noServer: true });
 
+  const PVP_TURN_DURATION_MS = 22_000;
+  const PVP_DISCONNECT_GRACE_MS = 30_000;
+
   const socketToUser = new Map<WebSocket, string>();
   const socketVerifiedUser = new Map<WebSocket, string>();
   const pendingInvites = new Map<string, PendingInvite>();
   const rooms = new Map<string, PvpRoom>();
   const matches = new Map<string, PvpMatchState>();
   const clashTimers = new Map<string, NodeJS.Timeout>();
+  const turnTimers = new Map<string, NodeJS.Timeout>();
+  const disconnectTimers = new Map<string, NodeJS.Timeout>();
+  const roomGraceTimers = new Map<string, NodeJS.Timeout>();
+  const lastKnownSeeds = new Map<string, FighterSeed>();
+
+  const makeEventId = () =>
+    `ev_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+  const clearTurnTimer = (matchId: string) => {
+    const t = turnTimers.get(matchId);
+    if (t) {
+      clearTimeout(t);
+      turnTimers.delete(matchId);
+    }
+  };
+
+  const clearMatchDisconnectTimers = (matchId: string) => {
+    const prefix = `${matchId}:`;
+    for (const [key, timer] of disconnectTimers.entries()) {
+      if (key.startsWith(prefix)) {
+        clearTimeout(timer);
+        disconnectTimers.delete(key);
+      }
+    }
+  };
 
   const broadcastPresence = () => {
     const list = Array.from(onlineUsers.values()).map((e) => ({
@@ -1638,19 +1737,84 @@ async function startServer() {
     }
   };
 
-  const finishMatch = (match: PvpMatchState, winnerUsername: string, reason?: string) => {
+  const scheduleTurnTimer = (match: PvpMatchState) => {
+    clearTurnTimer(match.id);
+    if (match.status !== 'active' || match.clash) return;
+    match.turnDurationMs = PVP_TURN_DURATION_MS;
+    match.turnEndsAt = Date.now() + PVP_TURN_DURATION_MS;
+
+    const scheduledTurn = match.turn;
+    const scheduledRound = match.round;
+
+    const timer = setTimeout(() => {
+      turnTimers.delete(match.id);
+      const current = matches.get(match.id);
+      if (
+        !current ||
+        current.status !== 'active' ||
+        current.clash ||
+        current.turn !== scheduledTurn ||
+        current.round !== scheduledRound
+      ) {
+        return;
+      }
+
+      const timedOutUser = current.turn;
+      const nextUser =
+        current.playerOrder.find((n) => n !== timedOutUser) || timedOutUser;
+      if (current.players[timedOutUser]) {
+        current.players[timedOutUser].guarding = false;
+      }
+      current.lastEvent = {
+        id: makeEventId(),
+        actor: timedOutUser,
+        target: nextUser,
+        action: 'timeout',
+        label: `⏱️ Tiempo agotado para ${timedOutUser}`,
+      };
+      current.log = [
+        `⏱️ Tiempo agotado para ${timedOutUser}. ¡Turno de ${nextUser}!`,
+        ...current.log.slice(0, 7),
+      ];
+      current.turn = nextUser;
+      current.round += 1;
+      scheduleTurnTimer(current);
+      broadcastMatch(current);
+    }, PVP_TURN_DURATION_MS + 120);
+
+    turnTimers.set(match.id, timer);
+  };
+
+  const finishMatch = (
+    match: PvpMatchState,
+    winnerUsername: string,
+    reason?: string,
+    lastEvent?: PvpCombatEvent | null
+  ) => {
     if (match.status === 'finished') return;
     const t = clashTimers.get(match.id);
     if (t) {
       clearTimeout(t);
       clashTimers.delete(match.id);
     }
+    clearTurnTimer(match.id);
+    clearMatchDisconnectTimers(match.id);
     match.clash = null;
     match.status = 'finished';
     match.winner = winnerUsername;
+    match.turnEndsAt = undefined;
+    if (lastEvent) {
+      match.lastEvent = lastEvent;
+    }
     if (reason) {
       match.log = [reason, ...match.log.slice(0, 7)];
     }
+
+    const xpMap: Record<string, number> = {};
+    for (const uname of match.playerOrder) {
+      xpMap[uname] = uname === winnerUsername ? 80 : 35;
+    }
+    match.xpRewards = xpMap;
 
     if (!match.rewardsGranted) {
       match.rewardsGranted = true;
@@ -1716,6 +1880,8 @@ async function startServer() {
       id,
       status: 'active',
       turn: p1.username,
+      turnEndsAt: Date.now() + PVP_TURN_DURATION_MS,
+      turnDurationMs: PVP_TURN_DURATION_MS,
       round: 1,
       winner: null,
       players: {
@@ -1723,10 +1889,21 @@ async function startServer() {
         [p2.username]: p2,
       },
       playerOrder: [p1.username, p2.username],
+      playerStatus: {
+        [p1.username]: { connected: onlineUsers.has(p1.username), reconnectingUntil: null },
+        [p2.username]: { connected: onlineUsers.has(p2.username), reconnectingUntil: null },
+      },
       clash: null,
+      lastEvent: null,
+      damageDealt: {
+        [p1.username]: 0,
+        [p2.username]: 0,
+      },
+      rematchRequestedBy: [],
       log: [`⚔️ ¡Duelo PvP iniciado: ${p1.username} vs ${p2.username}! Turno de ${p1.username}.`],
     };
     matches.set(id, match);
+    scheduleTurnTimer(match);
     broadcastMatch(match);
   };
 
@@ -1746,36 +1923,93 @@ async function startServer() {
     const defTaps = match.clash.taps[defenderName] || 0;
 
     match.clash = null;
+    match.damageDealt = match.damageDealt || { [initiatorName]: 0, [defenderName]: 0 };
+
+    const initiatorMoveset = getCharacterPhaseMoveset(
+      initiator.charId,
+      initiator.level,
+      initiator.stageName
+    );
+    const defenderMoveset = getCharacterPhaseMoveset(
+      defender.charId,
+      defender.level,
+      defender.stageName
+    );
 
     if (initTaps >= defTaps) {
-      const dmg = Math.round(initiator.baseAtk * (initTaps > defTaps ? 2.25 : 1.75));
-      const actualDmg = defender.guarding ? Math.round(dmg * 0.6) : dmg;
+      const ultMult =
+        1 + Math.min(15, Math.max(0, Number(initiator.ultBoostPct || 0))) / 100;
+      const dmg = Math.round(
+        initiator.baseAtk * (initTaps > defTaps ? 2.25 : 1.75) * ultMult
+      );
+      const wasBlocked = defender.guarding;
+      const actualDmg = wasBlocked ? Math.round(dmg * 0.6) : dmg;
       defender.hp = Math.max(0, defender.hp - actualDmg);
       defender.guarding = false;
+      match.damageDealt[initiatorName] =
+        (match.damageDealt[initiatorName] || 0) + actualDmg;
+
+      const ev: PvpCombatEvent = {
+        id: makeEventId(),
+        actor: initiator.username,
+        target: defender.username,
+        action: 'clash_win',
+        damage: actualDmg,
+        blocked: wasBlocked,
+        skillName: initiatorMoveset.ultimate.name,
+        auraColor: initiator.auraColor || initiatorMoveset.accentColor,
+        label: `🔥 ¡${initiatorMoveset.ultimate.name} de ${initiator.username}! -${actualDmg} HP`,
+      };
+      match.lastEvent = ev;
       match.log = [
-        `🔥 ¡${initiator.username} ganó el Choque de Ki (${initTaps} vs ${defTaps} toques) e infligió -${actualDmg} HP a ${defender.username}!`,
+        `🔥 ¡${initiator.username} desató ${initiatorMoveset.ultimate.name} (${initTaps} vs ${defTaps} toques) e infligió -${actualDmg} HP a ${defender.username}!`,
         ...match.log.slice(0, 7),
       ];
       if (defender.hp <= 0) {
-        finishMatch(match, initiator.username, `🏆 ¡${initiator.username} derrotó a ${defender.username} con Técnica Definitiva!`);
+        finishMatch(
+          match,
+          initiator.username,
+          `🏆 ¡${initiator.username} derrotó a ${defender.username} con ${initiatorMoveset.ultimate.name}!`,
+          ev
+        );
         return;
       }
     } else {
       const reflect = Math.round(defender.baseAtk * 1.1);
       initiator.hp = Math.max(0, initiator.hp - reflect);
       defender.guarding = false;
+      match.damageDealt[defenderName] =
+        (match.damageDealt[defenderName] || 0) + reflect;
+
+      const ev: PvpCombatEvent = {
+        id: makeEventId(),
+        actor: defender.username,
+        target: initiator.username,
+        action: 'clash_reflect',
+        damage: reflect,
+        skillName: defenderMoveset.guard.name,
+        auraColor: defender.auraColor || defenderMoveset.accentColor,
+        label: `🛡️ ¡${defenderMoveset.guard.name} de ${defender.username}! -${reflect} HP`,
+      };
+      match.lastEvent = ev;
       match.log = [
-        `🛡️ ¡${defender.username} ganó el Choque de Ki (${defTaps} vs ${initTaps} toques) y contraatacó por -${reflect} HP!`,
+        `🛡️ ¡${defender.username} resistió con ${defenderMoveset.guard.name} (${defTaps} vs ${initTaps} toques) y contraatacó por -${reflect} HP!`,
         ...match.log.slice(0, 7),
       ];
       if (initiator.hp <= 0) {
-        finishMatch(match, defender.username, `🏆 ¡${defender.username} remontó en el Choque de Ki y venció!`);
+        finishMatch(
+          match,
+          defender.username,
+          `🏆 ¡${defender.username} remontó el Choque de Ki y venció!`,
+          ev
+        );
         return;
       }
     }
 
     match.turn = defenderName;
     match.round += 1;
+    scheduleTurnTimer(match);
     broadcastMatch(match);
   };
 
@@ -1847,15 +2081,72 @@ async function startServer() {
           socketToUser.delete(prev.ws);
         }
         onlineUsers.set(username, { ws, seed });
+        lastKnownSeeds.set(username, seed);
         socketToUser.set(ws, username);
+        sendToUser(username, { type: 'pvp:authenticated', username });
         broadcastPresence();
 
-        // Resend active match if player reconnected
+        // Recover active match if player reconnected within grace period
+        let hasActiveMatch = false;
+        const clientActiveMatchId =
+          typeof msg.activeMatchId === 'string' && msg.activeMatchId.trim()
+            ? msg.activeMatchId.trim()
+            : null;
         for (const m of matches.values()) {
-          if (m.status === 'active' && m.playerOrder.includes(username)) {
+          if (m.playerOrder.includes(username) && m.status === 'active') {
+            hasActiveMatch = true;
+            const dKey = `${m.id}:${username}`;
+            const dTimer = disconnectTimers.get(dKey);
+            if (dTimer) {
+              clearTimeout(dTimer);
+              disconnectTimers.delete(dKey);
+            }
+            const prevConnected = m.playerStatus?.[username]?.connected;
+            m.playerStatus = {
+              ...(m.playerStatus || {}),
+              [username]: { connected: true, reconnectingUntil: null },
+            };
+            if (prevConnected === false) {
+              m.log = [`✅ ¡${username} se reconectó al combate!`, ...m.log.slice(0, 7)];
+              broadcastMatch(m);
+            } else {
+              sendToUser(username, { type: 'pvp:match_state', match: m });
+            }
+          } else if (
+            clientActiveMatchId &&
+            m.id === clientActiveMatchId &&
+            m.status === 'finished' &&
+            m.playerOrder.includes(username)
+          ) {
+            hasActiveMatch = true;
             sendToUser(username, { type: 'pvp:match_state', match: m });
           }
         }
+
+        // If client still displays an active match ID that no longer exists (e.g. server restarted)
+        if (!hasActiveMatch && clientActiveMatchId && !matches.has(clientActiveMatchId)) {
+          sendToUser(username, {
+            type: 'pvp:match_lost',
+            matchId: clientActiveMatchId,
+            message: 'El servidor se reinició y finalizó la partida anterior.',
+          });
+        }
+
+        // Restore private room if host reconnected within 30s grace window
+        for (const r of rooms.values()) {
+          if (r.hostUsername === username) {
+            const rt = roomGraceTimers.get(r.code);
+            if (rt) {
+              clearTimeout(rt);
+              roomGraceTimers.delete(r.code);
+            }
+            r.hostDisconnectedAt = null;
+            if (!hasActiveMatch) {
+              sendToUser(username, { type: 'pvp:room_created', code: r.code });
+            }
+          }
+        }
+
         // Resend pending invites
         for (const inv of pendingInvites.values()) {
           if (inv.toUsername === username) {
@@ -1930,15 +2221,42 @@ async function startServer() {
       if (type === 'pvp:create_room') {
         // Clear existing room hosted by this user
         for (const [c, r] of rooms.entries()) {
-          if (r.hostUsername === currentUsername) rooms.delete(c);
+          if (r.hostUsername === currentUsername) {
+            const rt = roomGraceTimers.get(c);
+            if (rt) {
+              clearTimeout(rt);
+              roomGraceTimers.delete(c);
+            }
+            rooms.delete(c);
+          }
         }
         const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
         let code = '';
         for (let i = 0; i < 5; i++) {
           code += alphabet[Math.floor(Math.random() * alphabet.length)];
         }
-        rooms.set(code, { code, hostUsername: currentUsername, createdAt: Date.now() });
+        rooms.set(code, {
+          code,
+          hostUsername: currentUsername,
+          createdAt: Date.now(),
+          hostDisconnectedAt: null,
+        });
         sendToUser(currentUsername, { type: 'pvp:room_created', code });
+        return;
+      }
+
+      if (type === 'pvp:leave_room') {
+        for (const [c, r] of rooms.entries()) {
+          if (r.hostUsername === currentUsername) {
+            const rt = roomGraceTimers.get(c);
+            if (rt) {
+              clearTimeout(rt);
+              roomGraceTimers.delete(c);
+            }
+            rooms.delete(c);
+          }
+        }
+        sendToUser(currentUsername, { type: 'pvp:room_closed' });
         return;
       }
 
@@ -1961,12 +2279,18 @@ async function startServer() {
         }
         const host = onlineUsers.get(room.hostUsername);
         if (!host) {
-          rooms.delete(code);
           sendToUser(currentUsername, {
             type: 'pvp:error',
-            message: 'El anfitrión se desconectó. Pídele que cree otra sala.',
+            message: room.hostDisconnectedAt
+              ? `${room.hostUsername} está reconectándose. Intenta entrar en unos segundos.`
+              : 'El anfitrión se desconectó. Pídele que cree otra sala.',
           });
           return;
+        }
+        const rt = roomGraceTimers.get(code);
+        if (rt) {
+          clearTimeout(rt);
+          roomGraceTimers.delete(code);
         }
         rooms.delete(code);
         startMatch(host.seed, meEntry.seed);
@@ -1985,39 +2309,140 @@ async function startServer() {
         const defender = match.players[opponentName];
         if (!attacker || !defender) return;
 
+        match.damageDealt = match.damageDealt || {
+          [attacker.username]: 0,
+          [defender.username]: 0,
+        };
+        const attackerMoveset = getCharacterPhaseMoveset(
+          attacker.charId,
+          attacker.level,
+          attacker.stageName
+        );
+        const accentColor = attacker.auraColor || attackerMoveset.accentColor;
+
         if (action === 'strike') {
           const isCrit = Math.random() < attacker.critChance;
           const rawDmg = Math.round(
             attacker.baseAtk * (0.9 + Math.random() * 0.25) * (isCrit ? 1.5 : 1)
           );
-          const guardMult = defender.guarding ? 0.35 : 1;
+          const wasGuarding = defender.guarding;
+          const guardMult = wasGuarding ? 0.35 : 1;
           const dmg = Math.max(4, Math.round(rawDmg * guardMult));
           defender.hp = Math.max(0, defender.hp - dmg);
           attacker.aura = Math.min(100, attacker.aura + 30);
+          match.damageDealt[attacker.username] =
+            (match.damageDealt[attacker.username] || 0) + dmg;
 
           let logLine = isCrit
-            ? `⚡ ¡CRÍTICO de ${attacker.username}! -${dmg} HP a ${defender.username}.`
-            : `👊 ${attacker.username} conectó Golpe de Ki (-${dmg} HP).`;
+            ? `⚡ ¡CRÍTICO con ${attackerMoveset.physical.name} de ${attacker.username}! -${dmg} HP a ${defender.username}.`
+            : `👊 ${attacker.username} ejecutó ${attackerMoveset.physical.name} (-${dmg} HP).`;
+          let evLabel = isCrit
+            ? `⚡ ¡CRÍTICO · ${attackerMoveset.physical.name}! -${dmg} HP (+30% Ki)`
+            : `👊 ${attackerMoveset.physical.name}: -${dmg} HP (+30% Ki)`;
 
-          if (defender.guarding) {
+          if (wasGuarding) {
             const counter = Math.round(defender.baseAtk * 0.5);
             attacker.hp = Math.max(0, attacker.hp - counter);
+            match.damageDealt[defender.username] =
+              (match.damageDealt[defender.username] || 0) + counter;
             defender.guarding = false;
-            logLine = `🛡️ ${defender.username} bloqueó (-${dmg} HP) y contraatacó por -${counter} HP.`;
+            logLine = `🛡️ ${defender.username} bloqueó ${attackerMoveset.physical.name} (-${dmg} HP) y contraatacó por -${counter} HP.`;
+            evLabel = `🛡️ Bloqueo (-${dmg} HP) · Contraataque -${counter} HP`;
           }
           attacker.guarding = false;
+          const ev: PvpCombatEvent = {
+            id: makeEventId(),
+            actor: attacker.username,
+            target: defender.username,
+            action: 'strike',
+            damage: dmg,
+            auraGain: 30,
+            crit: isCrit,
+            blocked: wasGuarding,
+            skillName: attackerMoveset.physical.name,
+            auraColor: accentColor,
+            label: evLabel,
+          };
+          match.lastEvent = ev;
           match.log = [logLine, ...match.log.slice(0, 7)];
 
           if (defender.hp <= 0) {
-            finishMatch(match, attacker.username, `🏆 ¡${attacker.username} ganó el duelo PvP!`);
+            finishMatch(
+              match,
+              attacker.username,
+              `🏆 ¡${attacker.username} ganó el duelo PvP con ${attackerMoveset.physical.name}!`,
+              ev
+            );
             return;
           }
           if (attacker.hp <= 0) {
-            finishMatch(match, defender.username, `🏆 ¡${defender.username} ganó con su contraataque!`);
+            finishMatch(
+              match,
+              defender.username,
+              `🏆 ¡${defender.username} ganó con su contraataque!`,
+              ev
+            );
             return;
           }
           match.turn = opponentName;
           match.round += 1;
+          scheduleTurnTimer(match);
+          broadcastMatch(match);
+          return;
+        }
+
+        if (action === 'special') {
+          if (attacker.aura < 40) return;
+          attacker.aura = Math.max(0, attacker.aura - 40);
+          const isCrit = Math.random() < Math.min(0.55, attacker.critChance + 0.08);
+          const rawDmg = Math.round(
+            attacker.baseAtk * (1.3 + Math.random() * 0.22) * (isCrit ? 1.45 : 1)
+          );
+          const wasGuarding = defender.guarding;
+          const dmg = Math.max(6, Math.round(rawDmg * (wasGuarding ? 0.65 : 1)));
+          defender.hp = Math.max(0, defender.hp - dmg);
+          defender.guarding = false;
+          attacker.guarding = false;
+          match.damageDealt[attacker.username] =
+            (match.damageDealt[attacker.username] || 0) + dmg;
+
+          const skillName = attackerMoveset.special.name;
+          const evLabel = isCrit
+            ? `✨ ¡CRÍTICO · ${skillName}! -${dmg} HP`
+            : wasGuarding
+            ? `✨ ¡${skillName} atravesó la guardia! -${dmg} HP`
+            : `✨ ${skillName}: -${dmg} HP`;
+          const logLine = `✨ ${attacker.username} usó ${skillName}${
+            isCrit ? ' (CRÍTICO)' : ''
+          } contra ${defender.username} (-${dmg} HP).`;
+
+          const ev: PvpCombatEvent = {
+            id: makeEventId(),
+            actor: attacker.username,
+            target: defender.username,
+            action: 'special',
+            damage: dmg,
+            crit: isCrit,
+            blocked: wasGuarding,
+            skillName,
+            auraColor: accentColor,
+            label: evLabel,
+          };
+          match.lastEvent = ev;
+          match.log = [logLine, ...match.log.slice(0, 7)];
+
+          if (defender.hp <= 0) {
+            finishMatch(
+              match,
+              attacker.username,
+              `🏆 ¡${attacker.username} remató con ${skillName}!`,
+              ev
+            );
+            return;
+          }
+          match.turn = opponentName;
+          match.round += 1;
+          scheduleTurnTimer(match);
           broadcastMatch(match);
           return;
         }
@@ -2027,20 +2452,45 @@ async function startServer() {
           attacker.hp = Math.min(attacker.maxHp, attacker.hp + heal);
           attacker.aura = Math.min(100, attacker.aura + 20);
           attacker.guarding = true;
+          const guardName = attackerMoveset.guard.name;
+          const ev: PvpCombatEvent = {
+            id: makeEventId(),
+            actor: attacker.username,
+            action: 'guard',
+            heal,
+            auraGain: 20,
+            skillName: guardName,
+            auraColor: accentColor,
+            label: `🛡️ ${guardName}: +${heal} HP · +20% Ki`,
+          };
+          match.lastEvent = ev;
           match.log = [
-            `🛡️ ${attacker.username} adoptó Guardia (+${heal} HP, +20% Ki).`,
+            `🛡️ ${attacker.username} activó ${guardName} (+${heal} HP, +20% Ki).`,
             ...match.log.slice(0, 7),
           ];
           match.turn = opponentName;
           match.round += 1;
+          scheduleTurnTimer(match);
           broadcastMatch(match);
           return;
         }
 
         if (action === 'ultimate') {
           if (attacker.aura < 100) return;
+          clearTurnTimer(match.id);
+          match.turnEndsAt = undefined;
           attacker.aura = 0;
           attacker.guarding = false;
+          const ultName = attackerMoveset.ultimate.name;
+          match.lastEvent = {
+            id: makeEventId(),
+            actor: attacker.username,
+            target: defender.username,
+            action: 'ultimate',
+            skillName: ultName,
+            auraColor: accentColor,
+            label: `🔥 ¡${attacker.username} lanzó ${ultName}!`,
+          };
           match.clash = {
             initiator: attacker.username,
             endsAt: Date.now() + 3500,
@@ -2050,7 +2500,7 @@ async function startServer() {
             },
           };
           match.log = [
-            `🔥 ¡${attacker.username} lanzó Técnica Definitiva! ¡Ambos jugadores toquen rápido para ganar el Choque de Ki!`,
+            `🔥 ¡${attacker.username} desató ${ultName}! ¡Toquen rápido para ganar el Choque de Ki!`,
             ...match.log.slice(0, 7),
           ];
           broadcastMatch(match);
@@ -2076,7 +2526,64 @@ async function startServer() {
         if (!match || match.status !== 'active') return;
         if (!match.playerOrder.includes(currentUsername)) return;
         const opponentName = match.playerOrder.find((n) => n !== currentUsername) || currentUsername;
-        finishMatch(match, opponentName, `🏳️ ${currentUsername} se retiró. ¡Victoria para ${opponentName}!`);
+        finishMatch(
+          match,
+          opponentName,
+          `🏳️ ${currentUsername} se retiró. ¡Victoria para ${opponentName}!`,
+          {
+            id: makeEventId(),
+            actor: currentUsername,
+            target: opponentName,
+            action: 'forfeit',
+            label: `🏳️ ${currentUsername} se retiró`,
+          }
+        );
+        return;
+      }
+
+      if (type === 'pvp:rematch') {
+        const matchId = String(msg.matchId || '');
+        const match = matches.get(matchId);
+        if (!match || match.status !== 'finished') return;
+        if (!match.playerOrder.includes(currentUsername)) return;
+
+        const requested = new Set(match.rematchRequestedBy || []);
+        if (!requested.has(currentUsername)) {
+          requested.add(currentUsername);
+        }
+        match.rematchRequestedBy = Array.from(requested);
+
+        const opponentName =
+          match.playerOrder.find((n) => n !== currentUsername) || currentUsername;
+        const p1Entry = onlineUsers.get(match.playerOrder[0]);
+        const p2Entry = onlineUsers.get(match.playerOrder[1]);
+
+        if (match.playerOrder.every((n) => requested.has(n))) {
+          if (p1Entry && p2Entry) {
+            startMatch(p1Entry.seed, p2Entry.seed);
+            return;
+          }
+          sendToUser(currentUsername, {
+            type: 'pvp:error',
+            message: `${opponentName} ya salió de la arena PvP.`,
+          });
+          broadcastMatch(match);
+          return;
+        }
+
+        if (!onlineUsers.has(opponentName)) {
+          sendToUser(currentUsername, {
+            type: 'pvp:error',
+            message: `${opponentName} está desconectado o salió del lobby.`,
+          });
+        } else {
+          sendToUser(opponentName, {
+            type: 'pvp:rematch_notice',
+            fromUsername: currentUsername,
+            matchId: match.id,
+          });
+        }
+        broadcastMatch(match);
         return;
       }
     });
@@ -2090,10 +2597,69 @@ async function startServer() {
         const current = onlineUsers.get(uname);
         if (current && current.ws === ws) {
           onlineUsers.delete(uname);
+        } else {
+          // Newer socket already replaced this one
+          return;
         }
+
+        // Keep private room alive during 30s reconnect grace window
         for (const [c, r] of rooms.entries()) {
-          if (r.hostUsername === uname) rooms.delete(c);
+          if (r.hostUsername === uname) {
+            r.hostDisconnectedAt = Date.now();
+            const existingRt = roomGraceTimers.get(c);
+            if (existingRt) clearTimeout(existingRt);
+            const rt = setTimeout(() => {
+              roomGraceTimers.delete(c);
+              const latestRoom = rooms.get(c);
+              if (latestRoom && latestRoom.hostUsername === uname && !onlineUsers.has(uname)) {
+                rooms.delete(c);
+              }
+            }, PVP_DISCONNECT_GRACE_MS);
+            roomGraceTimers.set(c, rt);
+          }
         }
+
+        // Put active matches into 30s reconnect grace state
+        for (const m of matches.values()) {
+          if (m.status === 'active' && m.playerOrder.includes(uname)) {
+            const deadline = Date.now() + PVP_DISCONNECT_GRACE_MS;
+            m.playerStatus = {
+              ...(m.playerStatus || {}),
+              [uname]: { connected: false, reconnectingUntil: deadline },
+            };
+            m.log = [
+              `📡 ${uname} perdió la conexión. Esperando reconexión (30s)...`,
+              ...m.log.slice(0, 7),
+            ];
+            broadcastMatch(m);
+
+            const dKey = `${m.id}:${uname}`;
+            const oldTimer = disconnectTimers.get(dKey);
+            if (oldTimer) clearTimeout(oldTimer);
+            const timer = setTimeout(() => {
+              disconnectTimers.delete(dKey);
+              const latestMatch = matches.get(m.id);
+              if (!latestMatch || latestMatch.status !== 'active') return;
+              if (onlineUsers.has(uname)) return;
+              const opponentName =
+                latestMatch.playerOrder.find((n) => n !== uname) || uname;
+              finishMatch(
+                latestMatch,
+                opponentName,
+                `📡 ${uname} no pudo reconectarse en 30s. ¡Victoria por abandono para ${opponentName}!`,
+                {
+                  id: makeEventId(),
+                  actor: uname,
+                  target: opponentName,
+                  action: 'disconnect',
+                  label: `📡 ${uname} abandonó por desconexión`,
+                }
+              );
+            }, PVP_DISCONNECT_GRACE_MS);
+            disconnectTimers.set(dKey, timer);
+          }
+        }
+
         broadcastPresence();
       }
     });

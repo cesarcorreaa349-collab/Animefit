@@ -21,7 +21,8 @@ export type ExerciseMuscle =
   | 'Piernas'
   | 'Glúteos'
   | 'Hombros'
-  | 'Brazos'
+  | 'Bíceps'
+  | 'Tríceps'
   | 'Abdomen'
   | 'Cardio';
 
@@ -229,6 +230,31 @@ export interface UserProfile {
   wellness?: DailyWellnessState;
 }
 
+export interface MoveSkillDef {
+  name: string;
+  effect: string;
+}
+
+export interface PhaseMoveset {
+  stageName: string;
+  styleLabel: string;
+  elementTag: string;
+  accentColor: string;
+  physical: MoveSkillDef;
+  special: MoveSkillDef;
+  guard: MoveSkillDef;
+  ultimate: MoveSkillDef;
+  isFallback: boolean;
+}
+
+export interface TrainingPvpBonus {
+  workoutsDone: number;
+  streakCount: number;
+  bonusAura: number;
+  ultBoostPct: number;
+  badgeLabel: string | null;
+}
+
 export interface PvpFighterState {
   username: string;
   charId: string;
@@ -240,6 +266,10 @@ export interface PvpFighterState {
   critChance: number;
   aura: number;
   guarding: boolean;
+  auraColor?: string;
+  ultBoostPct?: number;
+  streakLabel?: string | null;
+  streakCount?: number;
 }
 
 export interface PvpClashState {
@@ -248,15 +278,51 @@ export interface PvpClashState {
   taps: Record<string, number>;
 }
 
+export interface PvpPlayerConnectionStatus {
+  connected: boolean;
+  reconnectingUntil?: number | null;
+}
+
+export interface PvpCombatEvent {
+  id: string;
+  actor: string;
+  target?: string;
+  action:
+    | 'strike'
+    | 'special'
+    | 'guard'
+    | 'ultimate'
+    | 'clash_win'
+    | 'clash_reflect'
+    | 'timeout'
+    | 'forfeit'
+    | 'disconnect';
+  damage?: number;
+  heal?: number;
+  auraGain?: number;
+  crit?: boolean;
+  blocked?: boolean;
+  skillName?: string;
+  auraColor?: string;
+  label: string;
+}
+
 export interface PvpMatchState {
   id: string;
   status: 'active' | 'finished';
   turn: string;
+  turnEndsAt?: number;
+  turnDurationMs?: number;
   round: number;
   winner: string | null;
   players: Record<string, PvpFighterState>;
   playerOrder: [string, string];
+  playerStatus?: Record<string, PvpPlayerConnectionStatus>;
   clash: PvpClashState | null;
+  lastEvent?: PvpCombatEvent | null;
+  damageDealt?: Record<string, number>;
+  xpRewards?: Record<string, number>;
+  rematchRequestedBy?: string[];
   log: string[];
   rewardsGranted?: boolean;
 }

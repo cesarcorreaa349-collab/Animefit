@@ -69,6 +69,7 @@ import {
   getStoryWeeklyStatus,
   loadDB,
   markExplicitLogout,
+  mergeRichUserProfiles,
   persistDB,
   pushDBToServer,
   removeUserFromDB,
@@ -452,19 +453,10 @@ export default function App() {
         };
         const activeUsername = prev.sessionUser;
         if (activeUsername && payload.user && prev.users[activeUsername]) {
-          const localSelf = prev.users[activeUsername];
-          const serverSelf = payload.user;
-          mergedUsers[activeUsername] = {
-            ...serverSelf,
-            ...localSelf,
-            xp: Math.max(serverSelf.xp || 0, localSelf.xp || 0),
-            workoutsDone: Math.max(
-              serverSelf.workoutsDone || 0,
-              localSelf.workoutsDone || 0
-            ),
-            friendNotifications:
-              serverSelf.friendNotifications || localSelf.friendNotifications,
-          };
+          mergedUsers[activeUsername] = mergeRichUserProfiles(
+            prev.users[activeUsername],
+            payload.user
+          ).merged;
         }
         const next: AppDB = {
           ...prev,
@@ -1758,6 +1750,7 @@ export default function App() {
             currentUser={currentUser}
             allUsers={db.users}
             connected={pvp.connected}
+            reconnecting={pvp.reconnecting}
             onlineUsers={pvp.onlineUsers}
             incomingInvites={pvp.incomingInvites}
             roomCode={pvp.roomCode}
@@ -1768,10 +1761,12 @@ export default function App() {
             onAcceptInvite={pvp.acceptInvite}
             onDeclineInvite={pvp.declineInvite}
             onCreateRoom={pvp.createRoom}
+            onLeaveRoom={pvp.leaveRoom}
             onJoinRoom={pvp.joinRoom}
             onSendAction={pvp.sendAction}
             onSendClashTap={pvp.sendClashTap}
             onForfeitMatch={pvp.forfeitMatch}
+            onRequestRematch={pvp.requestRematch}
             onClearMatch={pvp.clearMatch}
             onToast={pushToast}
           />

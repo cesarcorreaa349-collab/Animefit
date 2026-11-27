@@ -61,11 +61,14 @@ export function usePvpSocket({
   userRef.current = user;
 
   const [connected, setConnected] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
   const [onlineUsers, setOnlineUsers] = useState<OnlinePvpUser[]>([]);
   const [incomingInvites, setIncomingInvites] = useState<PvpInvite[]>([]);
   const [roomCode, setRoomCode] = useState<string | null>(null);
   const [activeMatch, setActiveMatch] = useState<PvpMatchState | null>(null);
+  const activeMatchRef = useRef<PvpMatchState | null>(null);
+  activeMatchRef.current = activeMatch;
 
   const retryConnect = useCallback(() => {
     setRetryNonce((n) => n + 1);
@@ -85,6 +88,9 @@ export function usePvpSocket({
           level: lv.level,
           workoutsDone: u.workoutsDone || 0,
           prsCount: Object.keys(u.prs || {}).length,
+          ...(activeMatchRef.current?.id
+            ? { activeMatchId: activeMatchRef.current.id }
+            : {}),
         })
       );
     },
@@ -96,6 +102,7 @@ export function usePvpSocket({
       wsRef.current?.close();
       wsRef.current = null;
       setConnected(false);
+      setReconnecting(false);
       setOnlineUsers([]);
       setIncomingInvites([]);
       setRoomCode(null);
@@ -105,7 +112,9 @@ export function usePvpSocket({
 
     let cancelled = false;
     let attempt = 0;
+    let authRetryCount = 0;
     let connecting = false;
+    let fastRetryPending = false;
 
     const clearReconnectTimer = () => {
       if (reconnectTimerRef.current !== null) {
@@ -114,14 +123,18 @@ export function usePvpSocket({
       }
     };
 
-    const scheduleReconnect = () => {
+    const scheduleReconnect = (immediate = false) => {
       if (cancelled) return;
       clearReconnectTimer();
-      const delay = Math.min(6000, Math.round(900 * Math.pow(1.45, attempt)));
-      attempt = Math.min(attempt + 1, 6);
+      const useFastDelay = immediate && authRetryCount <= 3;
+      const delay = useFastDelay
+        ? 60
+        : Math.min(5000, Math.round(700 * Math.pow(1.45, attempt)));
+      attempt = useFastDelay ? 0 : Math.min(attempt + 1, 6);
+      setReconnecting(true);
       reconnectTimerRef.current = window.setTimeout(() => {
         reconnectTimerRef.current = null;
-        void connect(false);
+        void connect(useFastDelay);
       }, delay);
     };
 
@@ -138,13 +151,15 @@ export function usePvpSocket({
       const tokenRes = await apiFetchWsToken();
       if (cancelled) return null;
       if (tokenRes.ok) {
+        authRetryCount = 0;
         return tokenRes.wsToken;
       }
 
-      if (tokenRes.unauthenticated && userRef.current) {
+      if (userRef.current) {
         const resumed = await apiResumePvpSession(userRef.current);
         if (cancelled) return null;
         if (resumed.ok && resumed.data.wsToken) {
+          authRetryCount = 0;
           onSessionResumedRef.current?.(resumed.data);
           return resumed.data.wsToken;
         }
@@ -165,6 +180,7 @@ export function usePvpSocket({
       }
 
       connecting = true;
+      setReconnecting(true);
       let activeToken: string | null = null;
       try {
         activeToken = await resolveWsTokenSilently(forceRefreshToken);
@@ -174,7 +190,7 @@ export function usePvpSocket({
 
       if (cancelled) return;
       if (!activeToken) {
-        scheduleReconnect();
+        scheduleReconnect(false);
         return;
       }
 
@@ -187,9 +203,7 @@ export function usePvpSocket({
           ws.close();
           return;
         }
-        attempt = 0;
         clearReconnectTimer();
-        setConnected(true);
         if (userRef.current) {
           sendAuth(ws, userRef.current, activeToken);
         }
@@ -204,7 +218,16 @@ export function usePvpSocket({
         }
         const type = String(msg.type || '');
 
-        if (type === 'pvp:presence') {
+        if (type === 'pvp:authenticated') {
+          attempt = 0;
+          authRetryCount = 0;
+          setConnected(true);
+          setReconnecting(false);
+        } else if (type === 'pvp:presence') {
+          attempt = 0;
+          authRetryCount = 0;
+          setConnected(true);
+          setReconnecting(false);
           setOnlineUsers((msg.users as OnlinePvpUser[]) || []);
         } else if (type === 'pvp:invite') {
           const invite = msg.invite as PvpInvite;
@@ -225,11 +248,25 @@ export function usePvpSocket({
           );
         } else if (type === 'pvp:room_created') {
           setRoomCode(String(msg.code || ''));
+        } else if (type === 'pvp:room_closed') {
+          setRoomCode(null);
         } else if (type === 'pvp:match_state') {
           const match = msg.match as PvpMatchState;
           setActiveMatch(match);
           setRoomCode(null);
           setIncomingInvites([]);
+        } else if (type === 'pvp:match_lost') {
+          const lostId = String(msg.matchId || '');
+          if (activeMatchRef.current?.id === lostId) {
+            setActiveMatch(null);
+            onNotifyRef.current(
+              String(msg.message || 'La partida anterior expiró tras reiniciar el servidor.')
+            );
+          }
+        } else if (type === 'pvp:rematch_notice') {
+          onNotifyRef.current(
+            `🔥 ¡${String(msg.fromUsername || 'Tu rival')} pidió la revancha!`
+          );
         } else if (type === 'pvp:reward') {
           onRewardRef.current({
             xpEarned: Number(msg.xpEarned || 0),
@@ -256,6 +293,8 @@ export function usePvpSocket({
             message.includes('Debes iniciar sesión')
           ) {
             clearInMemoryAuthTokens();
+            authRetryCount += 1;
+            fastRetryPending = true;
             ws.close();
             return;
           }
@@ -269,7 +308,9 @@ export function usePvpSocket({
         }
         setConnected(false);
         if (cancelled) return;
-        scheduleReconnect();
+        const immediate = fastRetryPending;
+        fastRetryPending = false;
+        scheduleReconnect(immediate);
       };
     };
 
@@ -326,6 +367,7 @@ export function usePvpSocket({
 
   return {
     connected,
+    reconnecting,
     retryConnect,
     onlineUsers,
     incomingInvites,
@@ -342,13 +384,21 @@ export function usePvpSocket({
       return send({ type: 'pvp:decline', inviteId });
     },
     createRoom: () => send({ type: 'pvp:create_room' }),
+    leaveRoom: () => {
+      setRoomCode(null);
+      return send({ type: 'pvp:leave_room' });
+    },
     joinRoom: (code: string) => send({ type: 'pvp:join_room', code }),
-    sendAction: (matchId: string, action: 'strike' | 'guard' | 'ultimate') =>
-      send({ type: 'pvp:action', matchId, action }),
+    sendAction: (
+      matchId: string,
+      action: 'strike' | 'special' | 'guard' | 'ultimate'
+    ) => send({ type: 'pvp:action', matchId, action }),
     sendClashTap: (matchId: string) =>
       send({ type: 'pvp:clash_tap', matchId }),
     forfeitMatch: (matchId: string) =>
       send({ type: 'pvp:forfeit', matchId }),
+    requestRematch: (matchId: string) =>
+      send({ type: 'pvp:rematch', matchId }),
     clearMatch: () => setActiveMatch(null),
   };
 }

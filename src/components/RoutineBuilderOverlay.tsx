@@ -16,7 +16,12 @@ import {
   RoutineSetTemplate,
   UserProfile,
 } from '../types/animefit';
-import { getExerciseById, getLastExerciseSetsHistory } from '../utils/animefit';
+import {
+  getExerciseById,
+  getLastExerciseSetsHistory,
+  reorderArrayItem,
+} from '../utils/animefit';
+import { DraggableExerciseStrip } from './DraggableExerciseStrip';
 
 interface RoutineBuilderOverlayProps {
   open: boolean;
@@ -148,6 +153,19 @@ export function RoutineBuilderOverlay({
     onSelectIdx(Math.max(0, safeIdx - 1));
   };
 
+  const handleReorderExercise = (fromIdx: number, toIdx: number) => {
+    const nextExercises = reorderArrayItem(draft.exercises, fromIdx, toIdx);
+    if (nextExercises === draft.exercises) return;
+    onChangeDraft({ ...draft, exercises: nextExercises });
+    if (safeIdx === fromIdx) {
+      onSelectIdx(toIdx);
+    } else if (fromIdx < safeIdx && toIdx >= safeIdx) {
+      onSelectIdx(safeIdx - 1);
+    } else if (fromIdx > safeIdx && toIdx <= safeIdx) {
+      onSelectIdx(safeIdx + 1);
+    }
+  };
+
   const handleSaveClick = () => {
     if (!draft.name.trim()) {
       onToast('Escribe un nombre para tu rutina.');
@@ -239,55 +257,16 @@ export function RoutineBuilderOverlay({
           )}
         </div>
 
-        {/* Horizontal Exercise Bubbles Strip + Add (+) Circle */}
-        <div className="flex items-start gap-3 overflow-x-auto no-scrollbar pb-1">
-          {draft.exercises.map((item, idx) => {
-            const ex = getExerciseById(item.exId, user);
-            const isActive = idx === safeIdx;
-            const shortBadge = ex
-              ? ex.muscle.slice(0, 3).toUpperCase()
-              : 'EJ';
-            return (
-              <button
-                key={`${item.exId}_${idx}`}
-                type="button"
-                onClick={() => onSelectIdx(idx)}
-                className="flex flex-col items-center gap-1.5 shrink-0 w-[68px] group"
-              >
-                <div
-                  className={`w-14 h-14 rounded-full flex flex-col items-center justify-center border-2 transition-all ${
-                    isActive
-                      ? 'bg-[#101218] border-[#FACC15] text-[#FACC15] shadow-[0_0_14px_rgba(29,78,216,0.26)]'
-                      : 'bg-[#0A0B0F] border-[#1B1E26] text-[#8A92A2] group-hover:border-[#38BDF8]'
-                  }`}
-                >
-                  <Dumbbell className="w-4 h-4 mb-0.5" />
-                  <span className="text-[10px] font-black tracking-wider">
-                    {shortBadge}
-                  </span>
-                </div>
-                <span
-                  className={`text-[11px] font-semibold leading-tight text-center line-clamp-1 w-full ${
-                    isActive ? 'text-[#FACC15]' : 'text-[#8A92A2]'
-                  }`}
-                >
-                  {ex ? ex.name : 'Ejercicio'}
-                </span>
-              </button>
-            );
-          })}
-
-          <button
-            type="button"
-            onClick={onOpenAddExercise}
-            className="flex flex-col items-center gap-1.5 shrink-0 w-[68px]"
-          >
-            <div className="w-14 h-14 rounded-full border-2 border-dashed border-[#38BDF8]/70 bg-[#0A0B0F]/70 hover:bg-[#101218] text-[#38BDF8] flex items-center justify-center transition-colors">
-              <Plus className="w-6 h-6" />
-            </div>
-            <span className="text-[11px] font-bold text-[#38BDF8]">Añadir</span>
-          </button>
-        </div>
+        {/* Horizontal Exercise Bubbles Strip (Long-press to reorder) + Add (+) Circle */}
+        <DraggableExerciseStrip
+          items={draft.exercises}
+          user={user}
+          selectedIdx={safeIdx}
+          onSelectIdx={onSelectIdx}
+          onReorder={handleReorderExercise}
+          onAddClick={onOpenAddExercise}
+          addLabel="Añadir"
+        />
 
         {/* Active Exercise Detail & Per-Set Table (No center anatomical image!) */}
         {!activeItem || !activeEx ? (

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Bell, BellOff, Check, Eye, EyeOff, KeyRound, Pencil, Trash2 } from 'lucide-react';
 import { UserProfile } from '../types/animefit';
+import { computeTrainingPvpBonus, getCharacterPhaseMoveset } from '../data/movesets';
 import {
   TRAINING_STYLE_OPTIONS,
   formatDuration,
@@ -11,6 +12,7 @@ import {
 } from '../utils/animefit';
 import { CharacterAvatar } from './CharacterAvatar';
 import { Modal } from './Modal';
+import { PhaseMovesetPreview } from './PhaseMovesetPreview';
 import { WeeklySundaySummaryCard } from './WeeklySundaySummary';
 import { WeeklyVolumeChart } from './WeeklyVolumeChart';
 import { getTodayWellnessLog } from './WellnessTrackerSection';
@@ -88,6 +90,15 @@ export function CharacterTab({
   const lv = getLevelInfo(user.xp);
   const st = getCharacterStage(user.charId, lv.level);
   const ch = st.char;
+  const activeMoveset = getCharacterPhaseMoveset(
+    user.charId,
+    lv.level,
+    st.stageName
+  );
+  const trainingBonus = computeTrainingPvpBonus(
+    user.workoutsDone || 0,
+    (user.history || []).map((h) => h.date)
+  );
   const prs = Object.entries(user.prs || {});
   const oneRmMap = getAllOneRmRecordEntries(user);
   const recordExIds = Array.from(
@@ -182,6 +193,17 @@ export function CharacterTab({
             </span>{' '}
             <span className="text-[#8A92A2]">Sueño hoy</span>
           </div>
+        </div>
+
+        <div className="mt-4 text-left">
+          <PhaseMovesetPreview moveset={activeMoveset} />
+          {trainingBonus.badgeLabel && (
+            <div className="mt-2.5 text-[11px] font-bold text-[#FACC15] text-center tabular-nums">
+              🔥 Bono de entreno PvP: {trainingBonus.badgeLabel} · +
+              {trainingBonus.bonusAura}% Ki inicial · +
+              {trainingBonus.ultBoostPct}% daño en Definitiva
+            </div>
+          )}
         </div>
       </section>
 

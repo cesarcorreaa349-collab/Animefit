@@ -293,6 +293,14 @@ function authHeaders(
   return extra;
 }
 
+let inFlightAutoSync: {
+  usernameLower: string;
+  promise: Promise<
+    | { ok: true; data: AuthSessionPayload }
+    | { ok: false; rejected: boolean }
+  >;
+} | null = null;
+
 export function pushDBToServer(db: AppDB, keepalive = false): void {
   try {
     const uname = resolveUsername(db.users, db.sessionUser);
@@ -301,9 +309,10 @@ export function pushDBToServer(db: AppDB, keepalive = false): void {
     if (!selfUser) return;
     const sanitizedProfile: UserProfile = { ...selfUser };
     delete sanitizedProfile.pass;
+    const activeWorkout = db.activeWorkouts[uname] || null;
     const payload = JSON.stringify({
       profile: sanitizedProfile,
-      activeWorkout: db.activeWorkouts[uname] || null,
+      activeWorkout,
     });
     fetch(apiUrl('/api/user/sync'), {
       method: 'PUT',
@@ -314,9 +323,17 @@ export function pushDBToServer(db: AppDB, keepalive = false): void {
       }),
       body: payload,
       keepalive,
-    }).catch(() => {
-      // offline fallback: local device storage stays up to date
-    });
+    })
+      .then((res) => {
+        if (!keepalive && res.status === 401 && !isExplicitlyLoggedOut()) {
+          serverSessionStatus = 'unauthenticated';
+          inMemoryWsToken = null;
+          void apiResumePvpSession(sanitizedProfile, activeWorkout);
+        }
+      })
+      .catch(() => {
+        // offline fallback: local device storage stays up to date
+      });
   } catch {
     // ignore
   }
@@ -386,6 +403,254 @@ export function buildAppDBFromServerAuth(payload: AuthSessionPayload): AppDB {
   });
 }
 
+function mergeNumberRecordMax(
+  serverMap: Record<string, number> | undefined,
+  localMap: Record<string, number> | undefined
+): { merged: Record<string, number>; localHadHigher: boolean } {
+  const merged: Record<string, number> = { ...(serverMap || {}) };
+  let localHadHigher = false;
+  if (localMap) {
+    for (const [key, rawVal] of Object.entries(localMap)) {
+      const val = Number(rawVal || 0);
+      const prev = Number(merged[key] || 0);
+      if (val > prev) {
+        merged[key] = val;
+        localHadHigher = true;
+      }
+    }
+  }
+  return { merged, localHadHigher };
+}
+
+export function mergeRichUserProfiles(
+  localUser: UserProfile | undefined,
+  serverUser: UserProfile
+): { merged: UserProfile; localHadExtraData: boolean } {
+  if (!localUser) {
+    return { merged: serverUser, localHadExtraData: false };
+  }
+
+  let localHadExtraData = false;
+  const localXp = Math.max(0, Number(localUser.xp || 0));
+  const serverXp = Math.max(0, Number(serverUser.xp || 0));
+  if (localXp > serverXp) localHadExtraData = true;
+
+  const localWorkouts = Math.max(0, Number(localUser.workoutsDone || 0));
+  const serverWorkouts = Math.max(0, Number(serverUser.workoutsDone || 0));
+  if (localWorkouts > serverWorkouts) localHadExtraData = true;
+
+  const prsResult = mergeNumberRecordMax(serverUser.prs, localUser.prs);
+  if (prsResult.localHadHigher) localHadExtraData = true;
+
+  const oneRmResult = mergeNumberRecordMax(
+    serverUser.oneRmRecords,
+    localUser.oneRmRecords
+  );
+  if (oneRmResult.localHadHigher) localHadExtraData = true;
+
+  const serverHistory = Array.isArray(serverUser.history) ? serverUser.history : [];
+  const localHistory = Array.isArray(localUser.history) ? localUser.history : [];
+  const historyMap = new Map<string, (typeof serverHistory)[number]>();
+  for (const h of serverHistory) {
+    if (!h) continue;
+    historyMap.set(`${h.date || ''}::${h.name || ''}::${h.sets || 0}`, h);
+  }
+  for (const h of localHistory) {
+    if (!h) continue;
+    const key = `${h.date || ''}::${h.name || ''}::${h.sets || 0}`;
+    if (!historyMap.has(key)) {
+      localHadExtraData = true;
+    }
+    historyMap.set(key, h);
+  }
+  const mergedHistory = Array.from(historyMap.values()).slice(-80);
+
+  const localRoutines = Array.isArray(localUser.routines) ? localUser.routines : [];
+  const serverRoutines = Array.isArray(serverUser.routines)
+    ? serverUser.routines
+    : [];
+  let mergedRoutines = serverRoutines;
+  if (localRoutines.length > 0) {
+    const localRoutineIds = new Set(localRoutines.map((r) => r.id));
+    const localIsAhead =
+      localXp >= serverXp ||
+      localWorkouts >= serverWorkouts ||
+      localRoutines.length >= serverRoutines.length;
+    if (localIsAhead) {
+      mergedRoutines = localRoutines;
+      if (
+        localRoutines.length !== serverRoutines.length ||
+        serverRoutines.some((sr) => !localRoutineIds.has(sr.id))
+      ) {
+        localHadExtraData = true;
+      }
+    } else {
+      const mergedMap = new Map<string, Routine>();
+      for (const r of serverRoutines) mergedMap.set(r.id, r);
+      for (const r of localRoutines) {
+        if (!mergedMap.has(r.id)) {
+          mergedMap.set(r.id, r);
+          localHadExtraData = true;
+        }
+      }
+      mergedRoutines = Array.from(mergedMap.values());
+    }
+  }
+
+  const localFolders = Array.isArray(localUser.routineFolders)
+    ? localUser.routineFolders
+    : [];
+  const serverFolders = Array.isArray(serverUser.routineFolders)
+    ? serverUser.routineFolders
+    : [];
+  if (localFolders.length > serverFolders.length) localHadExtraData = true;
+  const mergedFolders =
+    localFolders.length >= serverFolders.length ? localFolders : serverFolders;
+
+  const customExMap = new Map<string, ExerciseDef>();
+  for (const ex of serverUser.customExercises || []) {
+    if (ex?.id) customExMap.set(ex.id, ex);
+  }
+  for (const ex of localUser.customExercises || []) {
+    if (ex?.id) {
+      if (!customExMap.has(ex.id)) localHadExtraData = true;
+      customExMap.set(ex.id, ex);
+    }
+  }
+  const mergedCustomExercises = Array.from(customExMap.values());
+
+  const mergedFriendsSet = new Set<string>([
+    ...(serverUser.friends || []),
+    ...(localUser.friends || []),
+  ]);
+  const mergedFriends = Array.from(mergedFriendsSet);
+  if (mergedFriends.length > (serverUser.friends || []).length) {
+    localHadExtraData = true;
+  }
+
+  const mergedGroups = Array.from(
+    new Set<string>([...(serverUser.groups || []), ...(localUser.groups || [])])
+  );
+
+  const localStory = localUser.story;
+  const serverStory = serverUser.story;
+  let mergedStory = serverStory || localStory;
+  if (localStory && serverStory) {
+    const localCount =
+      (localStory.completedChapters?.length || 0) * 10 +
+      (localStory.claimedRewards?.length || 0) +
+      (localStory.currentNodeIndex || 0);
+    const serverCount =
+      (serverStory.completedChapters?.length || 0) * 10 +
+      (serverStory.claimedRewards?.length || 0) +
+      (serverStory.currentNodeIndex || 0);
+    if (localCount > serverCount) {
+      mergedStory = localStory;
+      localHadExtraData = true;
+    }
+  } else if (localStory && !serverStory) {
+    mergedStory = localStory;
+    localHadExtraData = true;
+  }
+
+  let mergedWellness = serverUser.wellness || localUser.wellness;
+  if (localUser.wellness?.logs) {
+    const baseLogs = { ...(serverUser.wellness?.logs || {}) };
+    const stepGoal = Math.max(
+      3000,
+      Math.round(
+        localUser.wellness.stepGoal || serverUser.wellness?.stepGoal || 8000
+      )
+    );
+    const sleepGoal = Math.max(
+      4,
+      Math.min(
+        12,
+        Number(
+          localUser.wellness.sleepGoal || serverUser.wellness?.sleepGoal || 8
+        )
+      )
+    );
+    for (const [dateKey, localLog] of Object.entries(localUser.wellness.logs)) {
+      const serverLog = baseLogs[dateKey];
+      if (!serverLog) {
+        baseLogs[dateKey] = localLog;
+        localHadExtraData = true;
+      } else {
+        const bestSteps = Math.max(
+          Number(serverLog.steps || 0),
+          Number(localLog.steps || 0)
+        );
+        const bestSleep = Math.max(
+          Number(serverLog.sleepHours || 0),
+          Number(localLog.sleepHours || 0)
+        );
+        if (
+          bestSteps > Number(serverLog.steps || 0) ||
+          bestSleep > Number(serverLog.sleepHours || 0)
+        ) {
+          localHadExtraData = true;
+        }
+        baseLogs[dateKey] = {
+          ...serverLog,
+          ...localLog,
+          date: dateKey,
+          steps: bestSteps,
+          stepGoal: Math.max(3000, Number(localLog.stepGoal || stepGoal)),
+          sleepHours: bestSleep,
+          sleepGoal: Number(localLog.sleepGoal || sleepGoal),
+          stepsXpAwarded:
+            Boolean(serverLog.stepsXpAwarded) || Boolean(localLog.stepsXpAwarded),
+          sleepXpAwarded:
+            Boolean(serverLog.sleepXpAwarded) || Boolean(localLog.sleepXpAwarded),
+        };
+      }
+    }
+    mergedWellness = {
+      stepGoal,
+      sleepGoal,
+      logs: baseLogs,
+    };
+  }
+
+  if (localUser.profileSetup && !serverUser.profileSetup) {
+    localHadExtraData = true;
+  }
+
+  const localEmail = (localUser.email || '').trim();
+  const serverEmail = (serverUser.email || '').trim();
+  const mergedEmail =
+    localEmail && !localEmail.endsWith('@animefit.local')
+      ? localEmail
+      : serverEmail || localEmail;
+
+  const merged: UserProfile = {
+    ...serverUser,
+    email: mergedEmail,
+    charId: localUser.charId || serverUser.charId || 'goku',
+    xp: Math.max(serverXp, localXp),
+    workoutsDone: Math.max(serverWorkouts, localWorkouts),
+    pvpWins: Math.max(serverUser.pvpWins || 0, localUser.pvpWins || 0),
+    pvpLosses: Math.max(serverUser.pvpLosses || 0, localUser.pvpLosses || 0),
+    prs: prsResult.merged,
+    oneRmRecords: oneRmResult.merged,
+    history: mergedHistory,
+    friends: mergedFriends,
+    friendNotifications:
+      serverUser.friendNotifications || localUser.friendNotifications,
+    groups: mergedGroups,
+    customExercises: mergedCustomExercises,
+    routines: mergedRoutines,
+    routineFolders: mergedFolders,
+    storyRoutineId: localUser.storyRoutineId || serverUser.storyRoutineId,
+    story: mergedStory,
+    profileSetup: localUser.profileSetup || serverUser.profileSetup,
+    wellness: mergedWellness,
+  };
+
+  return { merged, localHadExtraData };
+}
+
 export async function syncDBFromBackups(localDb: AppDB): Promise<AppDB | null> {
   let effectiveLocal = localDb;
   if (!effectiveLocal.sessionUser && !isExplicitlyLoggedOut()) {
@@ -395,6 +660,9 @@ export async function syncDBFromBackups(localDb: AppDB): Promise<AppDB | null> {
     }
   }
 
+  let serverPublicUsers: Record<string, UserProfile> = {};
+  let serverGroups: CommunityGroup[] = [];
+
   try {
     const res = await fetch(apiUrl('/api/auth/me'), {
       credentials: 'include',
@@ -403,62 +671,35 @@ export async function syncDBFromBackups(localDb: AppDB): Promise<AppDB | null> {
     });
     if (res.ok) {
       const data = (await res.json()) as AuthSessionPayload;
+      serverPublicUsers = data.publicUsers || {};
+      serverGroups = data.groups || [];
+
       if (data.user) {
         serverSessionStatus = 'authenticated';
         setInMemoryAuthTokens(data.sessionToken, data.wsToken);
         const nextDb = buildAppDBFromServerAuth(data);
-        const localUser = effectiveLocal.users?.[data.user.username];
-        if (localUser?.wellness?.logs) {
-          const now = new Date();
-          const todayKey = `${now.getFullYear()}-${String(
-            now.getMonth() + 1
-          ).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-          const localToday = localUser.wellness.logs[todayKey];
-          const serverUser = nextDb.users[data.user.username];
-          const serverToday = serverUser?.wellness?.logs?.[todayKey];
-          const localSteps = Math.max(
-            0,
-            Math.min(60000, Math.round(Number(localToday?.steps) || 0))
-          );
-          const serverSteps = Math.max(
-            0,
-            Math.min(60000, Math.round(Number(serverToday?.steps) || 0))
-          );
-          if (serverUser && localToday && localSteps > serverSteps) {
-            const baseLogs = serverUser.wellness?.logs || {};
-            const baseStepGoal = Math.max(
-              3000,
-              Math.round(
-                serverUser.wellness?.stepGoal || localToday.stepGoal || 8000
-              )
-            );
-            const bonusNeeded =
-              !serverToday?.stepsXpAwarded &&
-              Boolean(localToday.stepsXpAwarded) &&
-              localSteps >= baseStepGoal;
-            nextDb.users[data.user.username] = {
-              ...serverUser,
-              xp: (serverUser.xp || 0) + (bonusNeeded ? 20 : 0),
-              wellness: {
-                stepGoal: baseStepGoal,
-                sleepGoal: serverUser.wellness?.sleepGoal || 8,
-                logs: {
-                  ...baseLogs,
-                  [todayKey]: {
-                    ...(serverToday || localToday),
-                    date: todayKey,
-                    steps: localSteps,
-                    stepGoal: baseStepGoal,
-                    stepsXpAwarded:
-                      Boolean(serverToday?.stepsXpAwarded) ||
-                      Boolean(localToday.stepsXpAwarded),
-                  },
-                },
-              },
-            };
-            pushDBToServer(nextDb, false);
-          }
+        const localKey = resolveUsername(effectiveLocal.users, data.user.username);
+        const localUser = localKey ? effectiveLocal.users?.[localKey] : undefined;
+        const serverUser = nextDb.users[data.user.username];
+        const { merged, localHadExtraData } = mergeRichUserProfiles(
+          localUser,
+          serverUser
+        );
+        nextDb.users[data.user.username] = merged;
+
+        let restoredLocalActive = false;
+        const localActive = localKey
+          ? effectiveLocal.activeWorkouts?.[localKey]
+          : undefined;
+        if (!nextDb.activeWorkouts[data.user.username] && localActive) {
+          nextDb.activeWorkouts[data.user.username] = localActive;
+          restoredLocalActive = true;
         }
+
+        if (localHadExtraData || restoredLocalActive) {
+          pushDBToServer(nextDb, false);
+        }
+
         try {
           localStorage.setItem(DB_KEY, JSON.stringify(nextDb));
         } catch {
@@ -470,76 +711,62 @@ export async function syncDBFromBackups(localDb: AppDB): Promise<AppDB | null> {
 
       serverSessionStatus = 'unauthenticated';
       inMemoryWsToken = null;
-
-      // Preserve saved local/IDB session unless user explicitly logged out,
-      // and silently resume the server session in the background for PvP/sync
-      if (
-        !isExplicitlyLoggedOut() &&
-        effectiveLocal.sessionUser &&
-        effectiveLocal.users?.[effectiveLocal.sessionUser]
-      ) {
-        const preservedUser = effectiveLocal.users[effectiveLocal.sessionUser];
-        const preservedActive =
-          effectiveLocal.activeWorkouts?.[preservedUser.username] || null;
-        const resumed = await apiResumePvpSession(preservedUser, preservedActive);
-        const resumedData = resumed.ok ? resumed.data : null;
-
-        const mergedDb = sanitizeDB({
-          users: {
-            ...(data.publicUsers || {}),
-            ...(resumedData?.publicUsers || {}),
-            ...effectiveLocal.users,
-            [preservedUser.username]: resumedData?.user
-              ? {
-                  ...resumedData.user,
-                  ...preservedUser,
-                  xp: Math.max(resumedData.user.xp || 0, preservedUser.xp || 0),
-                  workoutsDone: Math.max(
-                    resumedData.user.workoutsDone || 0,
-                    preservedUser.workoutsDone || 0
-                  ),
-                  friendNotifications:
-                    resumedData.user.friendNotifications ||
-                    preservedUser.friendNotifications,
-                }
-              : preservedUser,
-          },
-          groups:
-            resumedData?.groups && resumedData.groups.length > 0
-              ? resumedData.groups
-              : data.groups && data.groups.length > 0
-              ? data.groups
-              : effectiveLocal.groups,
-          sessionUser: preservedUser.username,
-          activeWorkouts: effectiveLocal.activeWorkouts || {},
-        });
-        try {
-          localStorage.setItem(DB_KEY, JSON.stringify(mergedDb));
-        } catch {
-          // ignore
-        }
-        void writeToIDB(mergedDb);
-        return mergedDb;
-      }
-
-      return null;
+    } else if (res.status === 401) {
+      serverSessionStatus = 'unauthenticated';
+      inMemoryWsToken = null;
     }
   } catch {
-    // Offline fallback: keep saved device cache below
+    // Offline or cold start: fall through to silent hydration / local cache
   }
 
+  // Preserve saved local/IDB session unless user explicitly logged out,
+  // and silently recreate/rehydrate the account in the background for PvP/sync
   if (
     !isExplicitlyLoggedOut() &&
     effectiveLocal.sessionUser &&
     effectiveLocal.users?.[effectiveLocal.sessionUser]
   ) {
+    const preservedUser = effectiveLocal.users[effectiveLocal.sessionUser];
+    const preservedActive =
+      effectiveLocal.activeWorkouts?.[preservedUser.username] || null;
+
+    const resumed = await apiResumePvpSession(preservedUser, preservedActive);
+    const resumedData = resumed.ok ? resumed.data : null;
+    const serverHydratedUser = resumedData?.user || undefined;
+    const finalUser = serverHydratedUser
+      ? mergeRichUserProfiles(preservedUser, serverHydratedUser).merged
+      : preservedUser;
+
+    const mergedDb = sanitizeDB({
+      users: {
+        ...serverPublicUsers,
+        ...(resumedData?.publicUsers || {}),
+        ...effectiveLocal.users,
+        [finalUser.username]: finalUser,
+      },
+      groups:
+        resumedData?.groups && resumedData.groups.length > 0
+          ? resumedData.groups
+          : serverGroups.length > 0
+          ? serverGroups
+          : effectiveLocal.groups,
+      sessionUser: finalUser.username,
+      activeWorkouts: {
+        ...(effectiveLocal.activeWorkouts || {}),
+        ...(resumedData?.activeWorkout && !preservedActive
+          ? { [finalUser.username]: resumedData.activeWorkout }
+          : {}),
+      },
+    });
     try {
-      localStorage.setItem(DB_KEY, JSON.stringify(effectiveLocal));
+      localStorage.setItem(DB_KEY, JSON.stringify(mergedDb));
     } catch {
       // ignore
     }
-    return effectiveLocal;
+    void writeToIDB(mergedDb);
+    return mergedDb;
   }
+
   return null;
 }
 
@@ -580,33 +807,52 @@ export async function apiResumePvpSession(
   | { ok: true; data: AuthSessionPayload }
   | { ok: false; rejected: boolean }
 > {
+  const usernameLower = (profile.username || '').trim().toLowerCase();
+  if (inFlightAutoSync && inFlightAutoSync.usernameLower === usernameLower) {
+    return inFlightAutoSync.promise;
+  }
+
+  const runPromise = (async (): Promise<
+    | { ok: true; data: AuthSessionPayload }
+    | { ok: false; rejected: boolean }
+  > => {
+    try {
+      const cleanProfile: UserProfile = { ...profile };
+      delete cleanProfile.pass;
+      const res = await fetch(apiUrl('/api/auth/auto-sync'), {
+        method: 'POST',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'animefit',
+        },
+        body: JSON.stringify({
+          profile: cleanProfile,
+          ...(activeWorkout !== undefined ? { activeWorkout } : {}),
+        }),
+      });
+      if (!res.ok) {
+        return { ok: false, rejected: res.status === 400 || res.status === 403 };
+      }
+      const json = (await res.json()) as AuthSessionPayload;
+      if (json.sessionToken || json.wsToken) {
+        serverSessionStatus = 'authenticated';
+        setInMemoryAuthTokens(json.sessionToken, json.wsToken);
+      }
+      return { ok: true, data: json };
+    } catch {
+      return { ok: false, rejected: false };
+    }
+  })();
+
+  inFlightAutoSync = { usernameLower, promise: runPromise };
   try {
-    const cleanProfile: UserProfile = { ...profile };
-    delete cleanProfile.pass;
-    const res = await fetch(apiUrl('/api/auth/resume-pvp'), {
-      method: 'POST',
-      credentials: 'include',
-      cache: 'no-store',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-With': 'animefit',
-      },
-      body: JSON.stringify({
-        profile: cleanProfile,
-        ...(activeWorkout !== undefined ? { activeWorkout } : {}),
-      }),
-    });
-    if (!res.ok) {
-      return { ok: false, rejected: res.status === 400 || res.status === 403 };
+    return await runPromise;
+  } finally {
+    if (inFlightAutoSync?.promise === runPromise) {
+      inFlightAutoSync = null;
     }
-    const json = (await res.json()) as AuthSessionPayload;
-    if (json.sessionToken || json.wsToken) {
-      serverSessionStatus = 'authenticated';
-      setInMemoryAuthTokens(json.sessionToken, json.wsToken);
-    }
-    return { ok: true, data: json };
-  } catch {
-    return { ok: false, rejected: false };
   }
 }
 
@@ -832,8 +1078,74 @@ export function getCharacterStage(charId: string, level: number): {
   };
 }
 
+export function normalizeExerciseMuscle(
+  muscle: string,
+  name = ''
+): ExerciseDef['muscle'] {
+  if (muscle === 'Brazos') {
+    if (
+      /tr[íi]cep|copa|franc[ée]s|rompecr[áa]neo|patada|kickback|fondo|diamante|jm\s*press|agarre\s*cerrado/i.test(
+        name
+      )
+    ) {
+      return 'Tríceps';
+    }
+    return 'Bíceps';
+  }
+  return muscle as ExerciseDef['muscle'];
+}
+
+export function getMuscleBadge(muscle: string): string {
+  const normalized = normalizeExerciseMuscle(muscle);
+  switch (normalized) {
+    case 'Pecho':
+      return 'PEC';
+    case 'Espalda':
+      return 'ESP';
+    case 'Piernas':
+      return 'PIE';
+    case 'Glúteos':
+      return 'GLU';
+    case 'Hombros':
+      return 'HOM';
+    case 'Bíceps':
+      return 'BIC';
+    case 'Tríceps':
+      return 'TRI';
+    case 'Abdomen':
+      return 'ABD';
+    case 'Cardio':
+      return 'CAR';
+    default:
+      return String(normalized).slice(0, 3).toUpperCase() || 'EJ';
+  }
+}
+
+export function reorderArrayItem<T>(
+  items: T[],
+  fromIdx: number,
+  toIdx: number
+): T[] {
+  if (
+    fromIdx === toIdx ||
+    fromIdx < 0 ||
+    toIdx < 0 ||
+    fromIdx >= items.length ||
+    toIdx >= items.length
+  ) {
+    return items;
+  }
+  const copy = [...items];
+  const [moved] = copy.splice(fromIdx, 1);
+  copy.splice(toIdx, 0, moved);
+  return copy;
+}
+
 export function getAllExercisesForUser(user: UserProfile | null): ExerciseDef[] {
-  const customs = user?.customExercises || [];
+  const customs = (user?.customExercises || []).map((ex) => ({
+    ...ex,
+    muscle: normalizeExerciseMuscle(ex.muscle, ex.name),
+  }));
   return [...BASE_EXERCISES, ...customs];
 }
 
@@ -1011,6 +1323,136 @@ export function beepRestDone(): void {
     osc.stop(ctx.currentTime + 0.25);
   } catch {
     // ignore audio restrictions
+  }
+}
+
+let sharedPvpAudioCtx: AudioContext | null = null;
+
+function getPvpAudioContext(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  const AudioCtx =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext: typeof AudioContext })
+      .webkitAudioContext;
+  if (!AudioCtx) return null;
+  if (!sharedPvpAudioCtx) {
+    sharedPvpAudioCtx = new AudioCtx();
+  }
+  return sharedPvpAudioCtx;
+}
+
+export function unlockPvpAudio(): void {
+  try {
+    const ctx = getPvpAudioContext();
+    if (ctx && ctx.state === 'suspended') {
+      void ctx.resume();
+    }
+  } catch {
+    // ignore mobile WebAudio restrictions cleanly
+  }
+}
+
+export function playPvpEffectSound(
+  kind: 'special' | 'ultimate' | 'hit' | 'crit' | 'guard'
+): void {
+  try {
+    const ctx = getPvpAudioContext();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') {
+      void ctx.resume();
+    }
+    const now = ctx.currentTime;
+
+    if (kind === 'ultimate') {
+      const osc = ctx.createOscillator();
+      const chime = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const chimeGain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(175, now);
+      osc.frequency.exponentialRampToValueAtTime(560, now + 0.17);
+      osc.frequency.exponentialRampToValueAtTime(310, now + 0.36);
+      gain.gain.setValueAtTime(0.065, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.37);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.38);
+
+      chime.type = 'triangle';
+      chime.frequency.setValueAtTime(840, now + 0.12);
+      chime.frequency.exponentialRampToValueAtTime(620, now + 0.34);
+      chimeGain.gain.setValueAtTime(0.001, now);
+      chimeGain.gain.setValueAtTime(0.055, now + 0.12);
+      chimeGain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+      chime.connect(chimeGain);
+      chimeGain.connect(ctx.destination);
+      chime.start(now + 0.12);
+      chime.stop(now + 0.36);
+    } else if (kind === 'special') {
+      const osc = ctx.createOscillator();
+      const harmonic = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const hGain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(340, now);
+      osc.frequency.exponentialRampToValueAtTime(780, now + 0.15);
+      gain.gain.setValueAtTime(0.07, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.21);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.22);
+
+      harmonic.type = 'sine';
+      harmonic.frequency.setValueAtTime(510, now + 0.04);
+      harmonic.frequency.exponentialRampToValueAtTime(980, now + 0.18);
+      hGain.gain.setValueAtTime(0.04, now + 0.04);
+      hGain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+      harmonic.connect(hGain);
+      hGain.connect(ctx.destination);
+      harmonic.start(now + 0.04);
+      harmonic.stop(now + 0.23);
+    } else if (kind === 'crit') {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(240, now);
+      osc.frequency.exponentialRampToValueAtTime(920, now + 0.05);
+      osc.frequency.exponentialRampToValueAtTime(140, now + 0.14);
+      gain.gain.setValueAtTime(0.06, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.16);
+    } else if (kind === 'guard') {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(420, now);
+      osc.frequency.exponentialRampToValueAtTime(540, now + 0.11);
+      gain.gain.setValueAtTime(0.05, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.14);
+    } else {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(180, now);
+      osc.frequency.exponentialRampToValueAtTime(90, now + 0.09);
+      gain.gain.setValueAtTime(0.048, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.11);
+    }
+  } catch {
+    // ignore mobile WebAudio restrictions cleanly
   }
 }
 

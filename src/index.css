@@ -115,12 +115,92 @@
   animation: levelupBanner 2.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
+@keyframes pvpTechFlash {
+  0% {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  22% {
+    opacity: 0.48;
+    transform: scale(1.01);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes pvpRingBurst {
+  0% {
+    opacity: 0.85;
+    transform: scale(0.45);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.4);
+  }
+}
+
+@keyframes pvpCalloutPop {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.92);
+  }
+  18% {
+    opacity: 1;
+    transform: translateY(0) scale(1.03);
+  }
+  78% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+
+@keyframes pvpHitShake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  50% {
+    transform: translateX(4px);
+  }
+  75% {
+    transform: translateX(-2px);
+  }
+}
+
+.pvp-tech-flash {
+  animation: pvpTechFlash 0.55s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.pvp-ring-burst {
+  animation: pvpRingBurst 0.55s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.pvp-callout-pop {
+  animation: pvpCalloutPop 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.pvp-hit-shake {
+  animation: pvpHitShake 0.26s ease-out;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .aura-pulse,
   .levelup-flash,
   .levelup-ring,
   .levelup-ring-delayed,
-  .levelup-banner {
+  .levelup-banner,
+  .pvp-tech-flash,
+  .pvp-ring-burst,
+  .pvp-callout-pop,
+  .pvp-hit-shake {
     animation: none;
   }
 }
