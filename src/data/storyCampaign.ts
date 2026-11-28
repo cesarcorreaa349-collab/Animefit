@@ -1067,10 +1067,15 @@ const SAGAS: SagaSpec[] = [
 export const STORY_CHAPTERS: StoryChapter[] = SAGAS.flatMap((saga) =>
   saga.chapters.map((ch, idxInSaga) => {
     const number = (saga.sagaIndex - 1) * 10 + (idxInSaga + 1);
+    const sagaTier = Math.floor((number - 1) / 10);
     const id = ch.id || `ch_${String(number).padStart(3, '0')}`;
     const minLevel = Math.max(1, Math.floor((number - 1) * 0.45) + 1);
-    const bossHp = Math.round(145 + (number - 1) * 12.4);
-    const bossAtk = Math.round(13 + (number - 1) * 0.76);
+    const bossHp = Math.round(215 + (number - 1) * 19.5 + sagaTier * 22);
+    const bossAtk = Math.round(14 + (number - 1) * 0.85);
+    const bossDefensePct = Math.min(
+      0.28,
+      Number((0.04 + Math.floor((number - 1) / 5) * 0.015).toFixed(3))
+    );
     const xpReward = 100 + (number - 1) * 10;
 
     return {
@@ -1084,6 +1089,7 @@ export const STORY_CHAPTERS: StoryChapter[] = SAGAS.flatMap((saga) =>
       bossTitle: ch.bossTitle,
       bossHp,
       bossAtk,
+      bossDefensePct,
       bossSignatureMove: ch.move,
       allyCharId: ch.bossId === saga.allyId ? undefined : saga.allyId,
       xpReward,

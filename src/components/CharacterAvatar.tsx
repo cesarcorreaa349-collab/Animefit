@@ -1,9 +1,14 @@
-import { useEffect, useState } from 'react';
-import { CHARACTER_IMAGES } from '../data/characterImages';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  getCharacterImageCandidates,
+  getPhaseVisualProfile,
+} from '../data/characterImages';
 import { getCharacterById } from '../utils/animefit';
 
 interface CharacterAvatarProps {
   charId: string;
+  stageName?: string;
+  level?: number;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
   className?: string;
 }
@@ -18,54 +23,81 @@ const SIZE_MAP = {
 
 export function CharacterAvatar({
   charId,
+  stageName,
+  level,
   size = 'md',
   className = '',
 }: CharacterAvatarProps) {
   const char = getCharacterById(charId);
-  const src = CHARACTER_IMAGES[charId] || CHARACTER_IMAGES.goku;
+  const phaseVisual = useMemo(
+    () => getPhaseVisualProfile(charId, stageName, level),
+    [charId, stageName, level]
+  );
+  const candidates = useMemo(
+    () => getCharacterImageCandidates(charId, stageName, level),
+    [charId, stageName, level]
+  );
   const px = SIZE_MAP[size];
-  const [imgFailed, setImgFailed] = useState(false);
+  const [candidateIdx, setCandidateIdx] = useState(0);
 
   useEffect(() => {
-    setImgFailed(false);
-  }, [charId, src]);
+    setCandidateIdx(0);
+  }, [charId, phaseVisual.stageName, candidates.length]);
+
+  const currentSrc =
+    candidateIdx < candidates.length ? candidates[candidateIdx] : null;
+  const ringColor = phaseVisual.auraColor || char.auraColor;
 
   return (
     <div
       style={{
         width: px,
         height: px,
-        borderColor: `${char.auraColor}99`,
+        borderColor: `${ringColor}B3`,
         boxShadow:
           size === 'xl' || size === 'lg'
-            ? `0 0 22px ${char.auraColor}44`
+            ? `0 0 22px ${phaseVisual.glowRgba}`
+            : phaseVisual.stageIndex > 0 && size === 'md'
+            ? `0 0 12px ${phaseVisual.glowRgba}`
             : undefined,
       }}
       className={`relative rounded-full overflow-hidden border-2 shrink-0 bg-[#030406] select-none ${className}`}
-      title={`${char.name} (${char.anime})`}
+      title={`${char.name} · ${phaseVisual.stageName} (${char.anime})`}
     >
-      {!imgFailed && src ? (
+      {currentSrc ? (
         <img
-          src={src}
-          alt={char.name}
+          src={currentSrc}
+          alt={`${char.name} — ${phaseVisual.stageName}`}
           width={px}
           height={px}
           referrerPolicy="no-referrer"
           loading={size === 'xl' || size === 'lg' ? 'eager' : 'lazy'}
           decoding="async"
-          onError={() => setImgFailed(true)}
+          onError={() => setCandidateIdx((idx) => idx + 1)}
+          style={
+            phaseVisual.imageFilter !== 'none'
+              ? { filter: phaseVisual.imageFilter }
+              : undefined
+          }
           className="w-full h-full object-cover object-top block"
         />
       ) : (
         <div
           className="w-full h-full flex items-center justify-center font-black text-[#F1F5F9]"
           style={{
-            background: `radial-gradient(circle at 35% 30%, ${char.auraColor}55, #07080B 78%)`,
+            background: `radial-gradient(circle at 35% 30%, ${ringColor}55, #07080B 78%)`,
             fontSize: Math.max(12, Math.round(px * 0.4)),
           }}
         >
           {char.name.slice(0, 1).toUpperCase()}
         </div>
+      )}
+      {phaseVisual.overlayGradient !== 'none' && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 rounded-full"
+          style={{ background: phaseVisual.overlayGradient }}
+        />
       )}
       <div
         aria-hidden="true"

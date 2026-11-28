@@ -6,6 +6,7 @@ import {
   UserProfile,
 } from '../types/animefit';
 import {
+  getActiveCharacterStage,
   getCharacterById,
   getCharacterStage,
   getExerciseById,
@@ -125,7 +126,12 @@ export function RankingTab({
                   className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-[#07080B] border border-[#1B1E26]"
                 >
                   <div className="flex items-center gap-3 min-w-0">
-                    <CharacterAvatar charId={charId} size="sm" />
+                    <CharacterAvatar
+                      charId={charId}
+                      stageName={getCharacterStage(charId, level).stageName}
+                      level={level}
+                      size="sm"
+                    />
                     <div className="min-w-0">
                       <div className="text-sm font-bold text-[#F1F5F9] truncate">
                         {notif.fromUsername}{' '}
@@ -220,7 +226,7 @@ export function RankingTab({
           <div className="flex flex-col gap-2.5">
             {leaderboard.map((u, idx) => {
               const lv = getLevelInfo(u.xp || 0);
-              const st = getCharacterStage(u.charId, lv.level);
+              const st = getActiveCharacterStage(u);
               const isMe = u.username === currentUser.username;
               const isFriend = friends.includes(u.username);
               return (
@@ -238,7 +244,12 @@ export function RankingTab({
                     >
                       #{idx + 1}
                     </span>
-                    <CharacterAvatar charId={st.char.id} size="sm" />
+                    <CharacterAvatar
+                      charId={st.char.id}
+                      stageName={st.stageName}
+                      level={lv.level}
+                      size="sm"
+                    />
                     <div className="min-w-0">
                       <div className="text-sm font-bold text-[#F1F5F9] truncate">
                         {u.username}{' '}
@@ -326,7 +337,12 @@ export function RankingTab({
                             {routine.name}
                           </h3>
                           <div className="flex items-center gap-2 text-xs text-[#8A92A2] mt-1.5">
-                            <CharacterAvatar charId={ch.id} size="xs" />
+                            <CharacterAvatar
+                              charId={ch.id}
+                              stageName={getActiveCharacterStage(user).stageName}
+                              level={getLevelInfo(user.xp || 0).level}
+                              size="xs"
+                            />
                             <span>
                               Por{' '}
                               <strong className="text-[#F1F5F9]">
@@ -394,14 +410,19 @@ export function RankingTab({
                   const fu = allUsers[fn];
                   if (!fu) return null;
                   const lv = getLevelInfo(fu.xp || 0);
-                  const st = getCharacterStage(fu.charId, lv.level);
+                  const st = getActiveCharacterStage(fu);
                   return (
                     <div
                       key={fn}
                       className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-[#07080B] border border-[#1B1E26]"
                     >
                       <div className="flex items-center gap-3 min-w-0">
-                        <CharacterAvatar charId={st.char.id} size="sm" />
+                        <CharacterAvatar
+                          charId={st.char.id}
+                          stageName={st.stageName}
+                          level={lv.level}
+                          size="sm"
+                        />
                         <div className="min-w-0">
                           <div className="text-sm font-bold text-[#F1F5F9] truncate">
                             {fu.username}

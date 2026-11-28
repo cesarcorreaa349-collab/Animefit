@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Check,
   Clock,
@@ -22,12 +22,33 @@ import {
   computeTrainingPvpBonus,
   getCharacterPhaseMoveset,
 } from '../data/movesets';
-import { OnlinePvpUser } from '../hooks/usePvpSocket';
-import { PvpInvite, PvpMatchState, UserProfile } from '../types/animefit';
 import {
+  DAILY_PVP_XP_CAP,
+  getShopItemById,
+  getUserExtraVictoryQuotes,
+  getUserOwnedPvpEmotes,
+  getUserPvpDailyXpEarned,
+  toShopLocalDateKey,
+} from '../data/shopCatalog';
+import { pickRotatingVictoryQuote } from '../data/victoryQuotes';
+import { OnlinePvpUser } from '../hooks/usePvpSocket';
+import {
+  PvpEmoteEvent,
+  PvpInvite,
+  PvpMatchState,
+  UserProfile,
+} from '../types/animefit';
+import {
+  getActiveCharacterStage,
   getCharacterStage,
+  getCombatSoundEnabled,
   getLevelInfo,
-  playPvpEffectSound,
+  playPvpEmoteSound,
+  playTechniqueCombatSound,
+  setCombatSoundEnabled,
+  speakVictoryVoice,
+  stopAllCombatAudio,
+  subscribeCombatSound,
   unlockPvpAudio,
 } from '../utils/animefit';
 import { CharacterAvatar } from './CharacterAvatar';
@@ -41,6 +62,9 @@ interface PvpTabProps {
   onlineUsers: OnlinePvpUser[];
   incomingInvites: PvpInvite[];
   roomCode: string | null;
+  queuedPublic?: boolean;
+  queueSize?: number;
+  lastEmote?: PvpEmoteEvent | null;
   activeMatch: PvpMatchState | null;
   onRetryConnect?: () => void;
   onAddFriendByName: (name: string) => void;
@@ -50,6 +74,9 @@ interface PvpTabProps {
   onCreateRoom: () => void;
   onLeaveRoom?: () => void;
   onJoinRoom: (code: string) => void;
+  onJoinPublicQueue?: () => void;
+  onLeavePublicQueue?: () => void;
+  onSendEmote?: (matchId: string, emoteId: string) => void;
   onSendAction: (
     matchId: string,
     action: 'strike' | 'special' | 'guard' | 'ultimate'
@@ -59,6 +86,7 @@ interface PvpTabProps {
   onRequestRematch?: (matchId: string) => void;
   onClearMatch: () => void;
   onToast: (msg: string) => void;
+  onOpenShop?: () => void;
 }
 
 export function PvpTab({
@@ -69,6 +97,9 @@ export function PvpTab({
   onlineUsers,
   incomingInvites,
   roomCode,
+  queuedPublic = false,
+  queueSize = 0,
+  lastEmote = null,
   activeMatch,
   onRetryConnect,
   onAddFriendByName,
@@ -78,12 +109,16 @@ export function PvpTab({
   onCreateRoom,
   onLeaveRoom,
   onJoinRoom,
+  onJoinPublicQueue,
+  onLeavePublicQueue,
+  onSendEmote,
   onSendAction,
   onSendClashTap,
   onForfeitMatch,
   onRequestRematch,
   onClearMatch,
   onToast,
+  onOpenShop,
 }: PvpTabProps) {
   const [joinCode, setJoinCode] = useState('');
   const [friendNameInput, setFriendNameInput] = useState('');
@@ -91,33 +126,52 @@ export function PvpTab({
   const [sharedCode, setSharedCode] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [flashEventId, setFlashEventId] = useState<string | null>(null);
-  const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
-    try {
-      return window.localStorage.getItem('animefit_pvp_sound_v1') !== '0';
-    } catch {
-      return true;
+  const [visibleEmote, setVisibleEmote] = useState<PvpEmoteEvent | null>(null);
+  const [victoryQuote, setVictoryQuote] = useState<string | null>(null);
+  const victoryHandledMatchRef = useRef<string | null>(null);
+  const playedPvpEventIdsRef = useRef<Set<string>>(new Set());
+  const playedEmoteIdsRef = useRef<Set<string>>(new Set());
+  const lastClashEndsAtRef = useRef<number | null>(null);
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() =>
+    getCombatSoundEnabled()
+  );
+
+  useEffect(() => subscribeCombatSound(setSoundEnabled), []);
+
+  useEffect(() => {
+    return () => {
+      stopAllCombatAudio();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!lastEmote || !lastEmote.id) return;
+    setVisibleEmote(lastEmote);
+    if (!playedEmoteIdsRef.current.has(lastEmote.id)) {
+      playedEmoteIdsRef.current.add(lastEmote.id);
+      playPvpEmoteSound(lastEmote.soundKey, `emote:${lastEmote.id}`);
     }
-  });
+    const t = window.setTimeout(() => {
+      setVisibleEmote((curr) => (curr?.id === lastEmote.id ? null : curr));
+    }, 3200);
+    return () => window.clearTimeout(t);
+  }, [lastEmote?.id]);
 
   const toggleSound = () => {
-    setSoundEnabled((prev) => {
-      const next = !prev;
-      if (next) unlockPvpAudio();
-      try {
-        window.localStorage.setItem('animefit_pvp_sound_v1', next ? '1' : '0');
-      } catch {
-        // ignore storage errors
-      }
-      return next;
-    });
+    setCombatSoundEnabled(!soundEnabled);
   };
 
   const lv = getLevelInfo(currentUser.xp || 0);
-  const st = getCharacterStage(currentUser.charId, lv.level);
+  const st = getActiveCharacterStage(currentUser);
   const lobbyMoveset = getCharacterPhaseMoveset(
     currentUser.charId,
-    lv.level,
+    st.effectiveLevel,
     st.stageName
+  );
+  const ownedEmotes = getUserOwnedPvpEmotes(currentUser);
+  const dailyPvpXpEarned = getUserPvpDailyXpEarned(
+    currentUser,
+    toShopLocalDateKey(new Date())
   );
   const lobbyTrainingBonus = computeTrainingPvpBonus(
     currentUser.workoutsDone || 0,
@@ -143,30 +197,195 @@ export function PvpTab({
     return () => window.clearInterval(id);
   }, [activeMatch?.id, activeMatch?.status]);
 
-  // Trigger brief visual hit/action pulse + optional lightweight WebAudio synth
-  const lastEventId = activeMatch?.lastEvent?.id || null;
-  const lastEventAction = activeMatch?.lastEvent?.action || null;
-  const lastEventCrit = Boolean(activeMatch?.lastEvent?.crit);
+  // Trigger brief visual hit/action pulse + differentiated technique sound strictly once per event ID
+  const activeMatchId = activeMatch?.id || null;
+  const lastEvObj = activeMatch?.lastEvent || null;
+  const lastEventId = lastEvObj?.id || null;
+
   useEffect(() => {
-    if (!lastEventId) return;
+    playedPvpEventIdsRef.current.clear();
+    lastClashEndsAtRef.current = null;
+    if (!activeMatchId) {
+      stopAllCombatAudio();
+    }
+  }, [activeMatchId]);
+
+  useEffect(() => {
+    if (!lastEventId || !lastEvObj || !activeMatch) return;
     setFlashEventId(lastEventId);
-    if (soundEnabled) {
-      if (lastEventAction === 'ultimate' || lastEventAction === 'clash_win') {
-        playPvpEffectSound('ultimate');
-      } else if (lastEventAction === 'special') {
-        playPvpEffectSound('special');
-      } else if (
-        lastEventAction === 'guard' ||
-        lastEventAction === 'clash_reflect'
-      ) {
-        playPvpEffectSound('guard');
-      } else if (lastEventAction === 'strike') {
-        playPvpEffectSound(lastEventCrit ? 'crit' : 'hit');
+
+    if (!playedPvpEventIdsRef.current.has(lastEventId)) {
+      playedPvpEventIdsRef.current.add(lastEventId);
+      const actorFighter = activeMatch.players[lastEvObj.actor];
+      const fallbackTargetName = activeMatch.playerOrder.find(
+        (n) => n !== lastEvObj.actor
+      );
+      const targetName = lastEvObj.target || fallbackTargetName;
+      const targetFighter = targetName ? activeMatch.players[targetName] : undefined;
+
+      const actorMoveset = actorFighter
+        ? getCharacterPhaseMoveset(
+            actorFighter.charId,
+            actorFighter.level,
+            actorFighter.stageName
+          )
+        : undefined;
+
+      const attackerActor = actorFighter
+        ? {
+            charId: actorFighter.charId,
+            stageName: actorFighter.stageName,
+            level: actorFighter.level,
+            energyName: actorFighter.energyName,
+          }
+        : undefined;
+      const defenderActor = targetFighter
+        ? {
+            charId: targetFighter.charId,
+            stageName: targetFighter.stageName,
+            level: targetFighter.level,
+            energyName: targetFighter.energyName,
+          }
+        : undefined;
+
+      const action = lastEvObj.action;
+      if (action === 'ultimate' || action === 'clash_win') {
+        playTechniqueCombatSound({
+          slot: 'ultimate',
+          skillName: lastEvObj.skillName || actorMoveset?.ultimate.name,
+          attacker: attackerActor,
+          defender: defenderActor,
+          isCrit: Boolean(lastEvObj.crit),
+          isBlocked: Boolean(lastEvObj.blocked),
+          eventKey: `pvp_ev:${activeMatch.id}:${lastEventId}`,
+        });
+      } else if (action === 'special') {
+        playTechniqueCombatSound({
+          slot: 'special',
+          skillName: lastEvObj.skillName || actorMoveset?.special.name,
+          attacker: attackerActor,
+          defender: defenderActor,
+          isCrit: Boolean(lastEvObj.crit),
+          isBlocked: Boolean(lastEvObj.blocked),
+          eventKey: `pvp_ev:${activeMatch.id}:${lastEventId}`,
+        });
+      } else if (action === 'guard' || action === 'clash_reflect') {
+        playTechniqueCombatSound({
+          slot: action === 'clash_reflect' ? 'clash_reflect' : 'guard',
+          skillName: lastEvObj.skillName || actorMoveset?.guard.name,
+          attacker: attackerActor,
+          defender: defenderActor,
+          isBlocked: action === 'clash_reflect',
+          eventKey: `pvp_ev:${activeMatch.id}:${lastEventId}`,
+        });
+      } else if (action === 'strike') {
+        playTechniqueCombatSound({
+          slot: 'physical',
+          skillName: lastEvObj.skillName || actorMoveset?.physical.name,
+          attacker: attackerActor,
+          defender: defenderActor,
+          isCrit: Boolean(lastEvObj.crit),
+          isBlocked: Boolean(lastEvObj.blocked),
+          eventKey: `pvp_ev:${activeMatch.id}:${lastEventId}`,
+        });
       }
     }
+
     const t = window.setTimeout(() => setFlashEventId(null), 700);
     return () => window.clearTimeout(t);
-  }, [lastEventId, lastEventAction, lastEventCrit, soundEnabled]);
+  }, [lastEventId, lastEvObj, activeMatch]);
+
+  // Play clash onset cue strictly once when a live clash begins
+  const activeClashEndsAt = activeMatch?.clash?.endsAt || null;
+  const activeClashInitiator = activeMatch?.clash?.initiator || null;
+  useEffect(() => {
+    if (!activeMatchId || !activeClashEndsAt || !activeClashInitiator || !activeMatch) {
+      return;
+    }
+    if (lastClashEndsAtRef.current === activeClashEndsAt) return;
+    lastClashEndsAtRef.current = activeClashEndsAt;
+    const initFighter = activeMatch.players[activeClashInitiator];
+    const initMoveset = initFighter
+      ? getCharacterPhaseMoveset(
+          initFighter.charId,
+          initFighter.level,
+          initFighter.stageName
+        )
+      : undefined;
+    playTechniqueCombatSound({
+      slot: 'charge',
+      skillName: initMoveset?.ultimate.name,
+      attacker: initFighter
+        ? {
+            charId: initFighter.charId,
+            stageName: initFighter.stageName,
+            level: initFighter.level,
+          }
+        : undefined,
+      eventKey: `pvp_clash:${activeMatchId}:${activeClashEndsAt}`,
+    });
+  }, [activeMatchId, activeClashEndsAt, activeClashInitiator, activeMatch]);
+
+  // Trigger victory quote + voice + fanfare (or defeat SFX) strictly once per finished match
+  const activeMatchStatus = activeMatch?.status || null;
+  const activeMatchWinner = activeMatch?.winner || null;
+  const activeMeCharId = activeMatch?.players[currentUser.username]?.charId || currentUser.charId;
+  const activeMeLevel = activeMatch?.players[currentUser.username]?.level || lv.level;
+  useEffect(() => {
+    if (!activeMatchId || activeMatchStatus !== 'finished') {
+      if (!activeMatchId || activeMatchStatus === 'active') {
+        victoryHandledMatchRef.current = null;
+        setVictoryQuote(null);
+      }
+      return;
+    }
+    if (victoryHandledMatchRef.current === activeMatchId) return;
+    victoryHandledMatchRef.current = activeMatchId;
+
+    const didWin = activeMatchWinner === currentUser.username;
+    if (didWin) {
+      const winnerStage = getActiveCharacterStage(currentUser, activeMeCharId);
+      const extraQuotes = getUserExtraVictoryQuotes(currentUser);
+      const picked = pickRotatingVictoryQuote(
+        winnerStage.char.id,
+        winnerStage.char.anime,
+        winnerStage.char.gender,
+        extraQuotes
+      );
+      setVictoryQuote(picked.quote);
+      playTechniqueCombatSound({
+        slot: 'victory',
+        attacker: {
+          charId: winnerStage.char.id,
+          stageName: winnerStage.stageName,
+          level: activeMeLevel,
+          anime: winnerStage.char.anime,
+        },
+        delayMs: 240,
+        eventKey: `pvp_win:${activeMatchId}`,
+      });
+      speakVictoryVoice(picked.quote, {
+        ...picked.voice,
+        gender: winnerStage.char.gender,
+        delayMs: 650,
+        eventKey: `pvp_voice:${activeMatchId}`,
+      });
+    } else {
+      setVictoryQuote(null);
+      playTechniqueCombatSound({
+        slot: 'defeat',
+        delayMs: 240,
+        eventKey: `pvp_lose:${activeMatchId}`,
+      });
+    }
+  }, [
+    activeMatchId,
+    activeMatchStatus,
+    activeMatchWinner,
+    activeMeCharId,
+    activeMeLevel,
+    currentUser.username,
+  ]);
 
   const handleCopyRoomCode = async () => {
     if (!roomCode) return;
@@ -281,8 +500,17 @@ export function PvpTab({
       : myEnergy;
     const myTotalDamage = activeMatch.damageDealt?.[currentUser.username] ?? 0;
     const rivalTotalDamage = activeMatch.damageDealt?.[rivalName] ?? 0;
+    const isPublicMatch = activeMatch.matchKind === 'public_random';
     const myXpEarned =
-      activeMatch.xpRewards?.[currentUser.username] ?? (iWon ? 80 : 35);
+      activeMatch.xpRewards?.[currentUser.username] ?? 0;
+    const myCoinsEarned =
+      activeMatch.coinRewards?.[currentUser.username] ?? 0;
+    const myRewardNotice =
+      activeMatch.xpCapNotices?.[currentUser.username] || null;
+    const winnerPlayer = activeMatch.winner
+      ? activeMatch.players[activeMatch.winner]
+      : null;
+    const winnerFinisher = winnerPlayer?.cosmetics?.pvpFinisher;
 
     const rematchList = activeMatch.rematchRequestedBy || [];
     const iRequestedRematch = rematchList.includes(currentUser.username);
@@ -294,7 +522,7 @@ export function PvpTab({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="text-[11px] font-bold uppercase tracking-wider text-[#38BDF8]">
-              Arena PvP en Tiempo Real · Ronda {activeMatch.round}
+              {isPublicMatch ? 'Arena Pública' : 'Duelo Privado / Amistoso (Sin farmeo)'} · Ronda {activeMatch.round}
             </div>
             <h2 className="text-xl font-black text-[#F1F5F9] truncate">
               {currentUser.username} vs {rivalName}
@@ -340,7 +568,10 @@ export function PvpTab({
             {activeMatch.status === 'active' ? (
               <button
                 type="button"
-                onClick={() => onForfeitMatch(activeMatch.id)}
+                onClick={() => {
+                  stopAllCombatAudio();
+                  onForfeitMatch(activeMatch.id);
+                }}
                 className="min-h-[38px] px-3 rounded-xl bg-[#EF4444]/15 border border-[#EF4444]/35 text-xs font-bold text-[#FCA5A5]"
               >
                 Retirarse
@@ -348,7 +579,10 @@ export function PvpTab({
             ) : (
               <button
                 type="button"
-                onClick={onClearMatch}
+                onClick={() => {
+                  stopAllCombatAudio();
+                  onClearMatch();
+                }}
                 className="min-h-[38px] px-3.5 rounded-xl bg-[#101218] border border-[#1B1E26] text-xs font-bold text-[#F1F5F9]"
               >
                 ← Lobby PvP
@@ -382,13 +616,96 @@ export function PvpTab({
 
         {/* Fighters Arena Card */}
         <section
-          className="relative overflow-hidden rounded-2xl border border-[#38BDF8]/40 p-4 sm:p-5 bg-[radial-gradient(circle_at_50%_15%,rgba(14,165,233,0.06),#07080B_78%)] flex flex-col gap-3 transition-colors duration-200"
-          style={
-            showElementFlash
-              ? { borderColor: `${flashAccent}AA` }
-              : undefined
-          }
+          className="relative overflow-hidden rounded-2xl border border-[#38BDF8]/40 p-4 sm:p-5 flex flex-col gap-3 transition-colors duration-200"
+          style={{
+            background: `linear-gradient(120deg, ${myEnergy.color}14 0%, #07080B 48%, ${rivalEnergy.color}14 100%)`,
+            borderColor: showElementFlash
+              ? `${flashAccent}AA`
+              : `${myEnergy.color}44`,
+          }}
         >
+          {/* Compact VS & Cosmetic Intro Presentation at Match Start */}
+          {activeMatch.status === 'active' &&
+            activeMatch.round === 1 &&
+            !lastEv &&
+            me &&
+            rival && (
+              <div className="pvp-vs-banner relative z-10 rounded-xl bg-[#030406]/85 border border-[#1B1E26] px-3 py-2.5 space-y-2">
+                {(me.cosmetics?.pvpIntro || rival.cosmetics?.pvpIntro) && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] border-b border-[#1B1E26] pb-1.5">
+                    {me.cosmetics?.pvpIntro ? (
+                      <span
+                        className="font-bold"
+                        style={{ color: me.cosmetics.pvpIntro.color }}
+                      >
+                        {me.cosmetics.pvpIntro.icon} {me.cosmetics.pvpIntro.bannerText}
+                      </span>
+                    ) : (
+                      <span />
+                    )}
+                    {rival.cosmetics?.pvpIntro && (
+                      <span
+                        className="font-bold text-right"
+                        style={{ color: rival.cosmetics.pvpIntro.color }}
+                      >
+                        {rival.cosmetics.pvpIntro.icon} {rival.cosmetics.pvpIntro.bannerText}
+                      </span>
+                    )}
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 flex-1 text-left">
+                    <div className="text-xs font-black text-[#FACC15] truncate">
+                      {me.cosmetics?.emblemIcon ? `${me.cosmetics.emblemIcon} ` : ''}
+                      {me.username}
+                    </div>
+                    <div className="text-[11px] font-bold text-[#CBD5E1] truncate">
+                      {me.stageName}
+                    </div>
+                    <div
+                      className="text-[10px] font-extrabold truncate"
+                      style={{ color: myEnergy.color }}
+                    >
+                      {myEnergy.name}
+                    </div>
+                  </div>
+
+                  <div className="shrink-0 text-center px-2">
+                    <div className="text-sm font-black tracking-widest text-[#FACC15] font-[family-name:var(--font-display)]">
+                      VS
+                    </div>
+                    <div className="text-[10px] font-bold text-[#38BDF8] whitespace-nowrap">
+                      En curso
+                    </div>
+                  </div>
+
+                  <div className="min-w-0 flex-1 text-right">
+                    <div className="text-xs font-black text-[#F1F5F9] truncate">
+                      {rival.cosmetics?.emblemIcon ? `${rival.cosmetics.emblemIcon} ` : ''}
+                      {rival.username}
+                    </div>
+                    <div className="text-[11px] font-bold text-[#CBD5E1] truncate">
+                      {rival.stageName}
+                    </div>
+                    <div
+                      className="text-[10px] font-extrabold truncate"
+                      style={{ color: rivalEnergy.color }}
+                    >
+                      {rivalEnergy.name}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+          {visibleEmote && (
+            <div className="relative z-20 rounded-xl border border-amber-400/55 bg-[#030406]/95 px-3 py-2 text-center animate-fadeIn">
+              <div className="text-[11px] font-black text-amber-300">
+                {visibleEmote.icon} {visibleEmote.sender}: “{visibleEmote.phrase}”
+              </div>
+            </div>
+          )}
+
           {showElementFlash && lastEv && (
             <>
               <div
@@ -474,18 +791,35 @@ export function PvpTab({
               <div
                 className={`flex flex-col items-center text-center rounded-xl p-2 transition-all duration-200 ${
                   isFlashing && lastEv?.target === me.username && (lastEv?.damage || 0) > 0
-                    ? `bg-[#EF4444]/12 ring-2 ring-[#EF4444]/60 ${
-                        showElementFlash ? 'pvp-hit-shake' : ''
-                      }`
+                    ? 'bg-[#EF4444]/12 ring-2 ring-[#EF4444]/60 combat-anim-hit'
                     : isFlashing && lastEv?.actor === me.username && lastEv?.action === 'guard'
-                    ? 'bg-[#22C55E]/10 ring-2 ring-[#22C55E]/50'
+                    ? 'bg-[#22C55E]/10 ring-2 ring-[#22C55E]/50 combat-anim-guard'
+                    : isFlashing &&
+                      lastEv?.actor === me.username &&
+                      (lastEv?.action === 'special' ||
+                        lastEv?.action === 'ultimate' ||
+                        lastEv?.action === 'clash_win')
+                    ? 'combat-anim-special'
+                    : isFlashing && lastEv?.actor === me.username && lastEv?.action === 'strike'
+                    ? 'combat-anim-attack-right'
                     : ''
                 }`}
               >
-                <CharacterAvatar charId={me.charId} size="lg" />
+                <CharacterAvatar
+                  charId={me.charId}
+                  stageName={me.stageName}
+                  level={me.level}
+                  size="lg"
+                />
                 <div className="text-xs font-extrabold text-[#FACC15] mt-2 truncate max-w-full">
+                  {me.cosmetics?.emblemIcon ? `${me.cosmetics.emblemIcon} ` : ''}
                   {me.username} (Tú)
                 </div>
+                {me.cosmetics?.titleName && (
+                  <div className="text-[10px] font-bold text-amber-300/90 truncate max-w-full">
+                    {me.cosmetics.titleName}
+                  </div>
+                )}
                 <div className="text-[11px] font-bold text-[#8A92A2] truncate max-w-full">
                   Nv.{me.level} · {me.stageName}
                 </div>
@@ -537,23 +871,42 @@ export function PvpTab({
               <div
                 className={`flex flex-col items-center text-center rounded-xl p-2 transition-all duration-200 ${
                   isFlashing && lastEv?.target === rival.username && (lastEv?.damage || 0) > 0
-                    ? `bg-[#EF4444]/12 ring-2 ring-[#EF4444]/60 ${
-                        showElementFlash ? 'pvp-hit-shake' : ''
-                      }`
+                    ? 'bg-[#EF4444]/12 ring-2 ring-[#EF4444]/60 combat-anim-hit'
                     : isFlashing && lastEv?.actor === rival.username && lastEv?.action === 'guard'
-                    ? 'bg-[#22C55E]/10 ring-2 ring-[#22C55E]/50'
+                    ? 'bg-[#22C55E]/10 ring-2 ring-[#22C55E]/50 combat-anim-guard'
+                    : isFlashing &&
+                      lastEv?.actor === rival.username &&
+                      (lastEv?.action === 'special' ||
+                        lastEv?.action === 'ultimate' ||
+                        lastEv?.action === 'clash_win')
+                    ? 'combat-anim-special'
+                    : isFlashing && lastEv?.actor === rival.username && lastEv?.action === 'strike'
+                    ? 'combat-anim-attack-left'
                     : ''
                 }`}
               >
-                <CharacterAvatar charId={rival.charId} size="lg" />
+                <CharacterAvatar
+                  charId={rival.charId}
+                  stageName={rival.stageName}
+                  level={rival.level}
+                  size="lg"
+                />
                 <div className="text-xs font-extrabold text-[#F1F5F9] mt-2 truncate max-w-full flex items-center gap-1">
                   <span
                     className={`w-2 h-2 rounded-full shrink-0 ${
                       rivalConnected ? 'bg-[#22C55E]' : 'bg-[#FACC15] animate-pulse'
                     }`}
                   />
-                  <span className="truncate">{rival.username}</span>
+                  <span className="truncate">
+                    {rival.cosmetics?.emblemIcon ? `${rival.cosmetics.emblemIcon} ` : ''}
+                    {rival.username}
+                  </span>
                 </div>
+                {rival.cosmetics?.titleName && (
+                  <div className="text-[10px] font-bold text-sky-300/90 truncate max-w-full">
+                    {rival.cosmetics.titleName}
+                  </div>
+                )}
                 <div className="text-[11px] font-bold text-[#8A92A2] truncate max-w-full">
                   Nv.{rival.level} · {rival.stageName}
                 </div>
@@ -632,7 +985,14 @@ export function PvpTab({
                 <button
                   type="button"
                   onClick={() => {
-                    if (soundEnabled) unlockPvpAudio();
+                    unlockPvpAudio();
+                    playTechniqueCombatSound({
+                      slot: 'charge',
+                      skillName: myMoveset.ultimate.name,
+                      attacker: me
+                        ? { charId: me.charId, stageName: me.stageName, level: me.level }
+                        : undefined,
+                    });
                     onSendClashTap(activeMatch.id);
                   }}
                   className="min-h-[62px] w-full rounded-xl bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] font-black text-base active:scale-95 transition-transform shadow-[0_0_20px_rgba(29,78,216,0.35)]"
@@ -780,6 +1140,29 @@ export function PvpTab({
               </>
             )}
 
+            {ownedEmotes.length > 0 && onSendEmote && (
+              <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-[#1B1E26]">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mr-1">
+                  Emotes:
+                </span>
+                {ownedEmotes.map((em) => (
+                  <button
+                    key={em.id}
+                    type="button"
+                    disabled={!connected}
+                    onClick={() => {
+                      if (soundEnabled) unlockPvpAudio();
+                      onSendEmote(activeMatch.id, em.id);
+                    }}
+                    className="px-2.5 py-1 rounded-lg border border-[#1B1E26] bg-[#07080B] hover:border-amber-400 text-[11px] font-bold text-slate-200 inline-flex items-center gap-1 disabled:opacity-45"
+                  >
+                    <span>{em.icon}</span>
+                    <span>{em.name.replace(/^Emote PvP:\s*/i, '')}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
             <div className="rounded-xl bg-[#07080B] border border-[#1B1E26] p-3 flex flex-col gap-1.5">
               {activeMatch.log.map((entry, idx) => (
                 <div
@@ -814,10 +1197,39 @@ export function PvpTab({
                     ? `Derrotaste a ${rivalName} en ${activeMatch.round} rondas.`
                     : `Gran pelea contra ${rivalName} en ${activeMatch.round} rondas.`)}
               </p>
+              {iWon && victoryQuote && (
+                <div
+                  className="mt-3 rounded-xl bg-[#07080B] border px-3.5 py-2.5 text-left"
+                  style={{ borderColor: `${myEnergy.color}66` }}
+                >
+                  <div
+                    className="text-[11px] font-extrabold uppercase tracking-wider"
+                    style={{ color: myEnergy.color }}
+                  >
+                    {getCharacterStage(activeMeCharId, activeMeLevel).char.name} dice:
+                  </div>
+                  <p className="text-xs sm:text-sm font-bold text-[#F1F5F9] italic mt-0.5 leading-snug">
+                    “{victoryQuote}”
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Quick Post-Match Summary */}
-            <div className="grid grid-cols-3 gap-2 text-center">
+            {winnerFinisher && (
+              <div
+                className="rounded-xl border px-3 py-2 text-xs font-black"
+                style={{
+                  borderColor: `${winnerFinisher.color}66`,
+                  backgroundColor: `${winnerFinisher.color}14`,
+                  color: winnerFinisher.color,
+                }}
+              >
+                {winnerFinisher.icon} Remate Visual de {activeMatch.winner}: {winnerFinisher.title}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
               <div className="rounded-xl bg-[#07080B] border border-[#1B1E26] p-2.5">
                 <div className="text-[10px] font-bold uppercase text-[#8A92A2]">
                   Tu daño
@@ -842,11 +1254,25 @@ export function PvpTab({
                   +{myXpEarned} XP
                 </div>
               </div>
+              <div className="rounded-xl bg-[#07080B] border border-[#1B1E26] p-2.5">
+                <div className="text-[10px] font-bold uppercase text-[#8A92A2]">
+                  Monedas
+                </div>
+                <div className="text-base font-black text-amber-300 tabular-nums mt-0.5">
+                  +{myCoinsEarned} 🪙
+                </div>
+              </div>
             </div>
+
+            {myRewardNotice && (
+              <div className="rounded-xl bg-[#07080B] border border-amber-500/40 px-3 py-2 text-xs font-semibold text-amber-200">
+                {myRewardNotice}
+              </div>
+            )}
 
             {rivalRequestedRematch && !iRequestedRematch && (
               <div className="rounded-xl bg-[#FACC15]/12 border border-[#FACC15]/50 px-3 py-2 text-xs font-extrabold text-[#FACC15]">
-                🔥 ¡{rivalName} quiere la revancha ahora mismo!
+                🔥 ¡{rivalName} quiere la revancha (amistosa, 0 monedas/XP)!
               </div>
             )}
 
@@ -854,11 +1280,14 @@ export function PvpTab({
               <button
                 type="button"
                 disabled={iRequestedRematch || !connected}
-                onClick={() =>
-                  onRequestRematch
-                    ? onRequestRematch(activeMatch.id)
-                    : onSendChallenge(rivalName)
-                }
+                onClick={() => {
+                  stopAllCombatAudio();
+                  if (onRequestRematch) {
+                    onRequestRematch(activeMatch.id);
+                  } else {
+                    onSendChallenge(rivalName);
+                  }
+                }}
                 className={`min-h-[46px] px-3 rounded-xl text-xs font-black inline-flex items-center justify-center gap-1.5 disabled:opacity-60 ${
                   rivalRequestedRematch && !iRequestedRematch
                     ? 'bg-gradient-to-br from-[#FACC15] to-[#D97706] text-[#030406] shadow-[0_0_16px_rgba(250,204,21,0.3)]'
@@ -874,7 +1303,10 @@ export function PvpTab({
               </button>
               <button
                 type="button"
-                onClick={onClearMatch}
+                onClick={() => {
+                  stopAllCombatAudio();
+                  onClearMatch();
+                }}
                 className="min-h-[46px] px-3 rounded-xl bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] text-xs font-black"
               >
                 Volver al Lobby
@@ -901,13 +1333,21 @@ export function PvpTab({
       >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-3.5">
-            <CharacterAvatar charId={st.char.id} size="md" />
+            <CharacterAvatar
+              charId={st.char.id}
+              stageName={st.stageName}
+              level={st.effectiveLevel}
+              size="md"
+            />
             <div className="min-w-0">
               <div className="text-xs font-bold uppercase tracking-wider text-[#38BDF8] flex items-center gap-1.5">
                 <Swords className="w-3.5 h-3.5" />
                 Arena PvP en Tiempo Real
               </div>
               <h2 className="text-lg sm:text-xl font-black text-[#F1F5F9] truncate">
+                {currentUser.equippedCosmetics?.emblemId
+                  ? `${getShopItemById(currentUser.equippedCosmetics.emblemId)?.icon || ''} `
+                  : ''}
                 {currentUser.username} · {st.char.name}
               </h2>
               <p className="text-xs text-[#8A92A2] mt-0.5 tabular-nums">
@@ -934,35 +1374,94 @@ export function PvpTab({
             </div>
           </div>
 
-          <div className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-[#07080B] border border-[#1B1E26] text-xs font-bold shrink-0 self-start sm:self-center">
-            {connected ? (
-              <>
-                <Wifi className="w-4 h-4 text-[#22C55E]" />
-                <span className="text-[#22C55E]">
-                  Conectado ({onlineUsers.length})
-                </span>
-              </>
-            ) : (
-              <>
-                <WifiOff className="w-4 h-4 text-[#FACC15] animate-pulse" />
-                <span className="text-[#FACC15]">
-                  {reconnecting ? 'Reconectando...' : 'Conectando...'}
-                </span>
-                {onRetryConnect && (
-                  <button
-                    type="button"
-                    onClick={onRetryConnect}
-                    className="ml-1 px-2 py-0.5 rounded-md bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-[11px] font-bold text-[#38BDF8]"
-                  >
-                    Reintentar
-                  </button>
-                )}
-              </>
+          <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-center">
+            {onOpenShop && (
+              <button
+                type="button"
+                onClick={onOpenShop}
+                className="px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/35 hover:bg-amber-500/20 text-xs font-black text-amber-300 tabular-nums"
+              >
+                🪙 {Math.max(0, Math.floor(Number(currentUser.coins || 0)))} · Tienda
+              </button>
             )}
+            <div className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-[#07080B] border border-[#1B1E26] text-xs font-bold">
+              {connected ? (
+                <>
+                  <Wifi className="w-4 h-4 text-[#22C55E]" />
+                  <span className="text-[#22C55E]">
+                    Conectado ({onlineUsers.length})
+                  </span>
+                </>
+              ) : (
+                <>
+                  <WifiOff className="w-4 h-4 text-[#FACC15] animate-pulse" />
+                  <span className="text-[#FACC15]">
+                    {reconnecting ? 'Reconectando...' : 'Conectando...'}
+                  </span>
+                  {onRetryConnect && (
+                    <button
+                      type="button"
+                      onClick={onRetryConnect}
+                      className="ml-1 px-2 py-0.5 rounded-md bg-[#101218] border border-[#1B1E26] hover:border-[#38BDF8] text-[11px] font-bold text-[#38BDF8]"
+                    >
+                      Reintentar
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         </div>
 
         <PhaseMovesetPreview moveset={lobbyMoveset} compact />
+      </section>
+
+      {/* Public Random Arena Card + Daily PvP XP Cap */}
+      <section className="rounded-2xl border border-amber-500/35 bg-[#0A0B0F] p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="space-y-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-base font-black text-white">
+              Arena Pública Aleatoria (Recompensas Activas)
+            </h3>
+            <span className="text-xs font-black text-sky-300 tabular-nums">
+              XP PvP hoy: {dailyPvpXpEarned} / {DAILY_PVP_XP_CAP}
+            </span>
+          </div>
+          <p className="text-xs text-[#8A92A2] leading-relaxed">
+            Empareja al azar contra rivales fuera de tu lista de amigos. Otorga monedas (+20 victoria / +8 derrota) y XP hasta {DAILY_PVP_XP_CAP} XP por día local.
+          </p>
+          <p className="text-[11px] text-amber-300/90">
+            Anti-farmeo: Salas privadas, retos a amigos y revanchas otorgan 0 monedas y 0 XP.
+          </p>
+        </div>
+
+        <div className="shrink-0">
+          {queuedPublic ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-amber-300 tabular-nums">
+                Buscando rival ({queueSize} en cola)...
+              </span>
+              {onLeavePublicQueue && (
+                <button
+                  type="button"
+                  onClick={onLeavePublicQueue}
+                  className="min-h-[42px] px-3.5 rounded-xl bg-[#101218] border border-rose-500/40 text-xs font-bold text-rose-300"
+                >
+                  Salir
+                </button>
+              )}
+            </div>
+          ) : (
+            <button
+              type="button"
+              disabled={!connected || !onJoinPublicQueue}
+              onClick={() => onJoinPublicQueue?.()}
+              className="min-h-[44px] px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black disabled:opacity-50 whitespace-nowrap"
+            >
+              ⚔️ Buscar Duelo Público
+            </button>
+          )}
+        </div>
       </section>
 
       {/* Incoming PvP Invites */}
@@ -978,13 +1477,20 @@ export function PvpTab({
               className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl bg-[#07080B] border border-[#1B1E26]"
             >
               <div className="flex items-center gap-3">
-                <CharacterAvatar charId={inv.fromCharId} size="sm" />
+                <CharacterAvatar
+                  charId={inv.fromCharId}
+                  stageName={
+                    getCharacterStage(inv.fromCharId, inv.fromLevel || 1).stageName
+                  }
+                  level={inv.fromLevel || 1}
+                  size="sm"
+                />
                 <div>
                   <div className="text-sm font-black text-[#F1F5F9]">
                     {inv.fromUsername} te desafía a combate
                   </div>
                   <div className="text-xs text-[#8A92A2]">
-                    Guerrero Nv.{inv.fromLevel} · Recompensa +80 XP al ganador
+                    Guerrero Nv.{inv.fromLevel} · Duelo amistoso (0 monedas / 0 XP)
                   </div>
                 </div>
               </div>
@@ -1173,7 +1679,12 @@ export function PvpTab({
                     className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-[#07080B] border border-[#1B1E26]"
                   >
                     <div className="flex items-center gap-3 min-w-0">
-                      <CharacterAvatar charId={fCharId} size="sm" />
+                      <CharacterAvatar
+                        charId={fCharId}
+                        stageName={fStage}
+                        level={fLv}
+                        size="sm"
+                      />
                       <div className="min-w-0">
                         <div className="text-sm font-bold text-[#F1F5F9] truncate flex items-center gap-1.5">
                           <span

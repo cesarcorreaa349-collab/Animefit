@@ -4,6 +4,7 @@ import {
   ArrowUp,
   Check,
   ChevronRight,
+  Flame,
   Folder,
   FolderInput,
   FolderOpen,
@@ -32,11 +33,16 @@ import {
   beepRestDone,
   buildSmartRoutines,
   calculateEstimated1RM,
+  computeDailyStreakSummary,
   formatDuration,
+  getActiveCharacterStage,
   getAllExercisesForUser,
   getBestOneRmForExercise,
+  getCharacterStage,
   getExerciseById,
+  getGlobalExerciseBaseline,
   getLastExerciseSetsHistory,
+  getLevelInfo,
   reorderArrayItem,
   unlockRestAudio,
 } from '../utils/animefit';
@@ -353,6 +359,11 @@ export function TrainTab({
 
   const handlePickExercise = (ex: ExerciseDef) => {
     if (selectorMode === 'active' && activeWorkout) {
+      const baseline = getGlobalExerciseBaseline(user, ex.id, {
+        exName: ex.name,
+        isCardio: ex.isCardio,
+        isBodyweight: ex.isBodyweight,
+      });
       onUpdateActiveWorkout(
         (prevW) => ({
           ...prevW,
@@ -360,7 +371,10 @@ export function TrainTab({
             ...prevW.exercises,
             {
               exId: ex.id,
+              exName: ex.name,
               targetReps: '',
+              baselinePr: baseline.bestPr,
+              baselineHasPrior: baseline.hasPriorRecord,
               sets: [
                 {
                   weight: '',
@@ -682,12 +696,21 @@ export function TrainTab({
             {activeWorkout.exercises.map((item, exIdx) => {
               const ex = getExerciseById(item.exId, user);
               if (!ex) return null;
-              const prevHist = getLastExerciseSetsHistory(user, item.exId);
-              const prBest = user.prs[item.exId] || 0;
+              const prevHist = getLastExerciseSetsHistory(user, item.exId, ex.name);
+              const globalBaseline = getGlobalExerciseBaseline(user, item.exId, {
+                exName: ex.name,
+                isCardio: ex.isCardio,
+                isBodyweight: ex.isBodyweight,
+              });
+              const sessionHasPrior =
+                item.baselineHasPrior ?? globalBaseline.hasPriorRecord;
+              const priorPrBest = item.baselinePr ?? globalBaseline.bestPr;
+              const prBest = Math.max(priorPrBest, globalBaseline.bestPr);
               const bestOneRm = getBestOneRmForExercise(
                 user,
                 item.exId,
-                ex.isCardio
+                ex.isCardio,
+                ex.name
               );
               const metricUnit = ex.isCardio
                 ? 'min'
@@ -769,7 +792,7 @@ export function TrainTab({
                     </div>
                   </div>
 
-                  {prevHist && (
+                  {prevHist ? (
                     <div className="mt-2.5 px-3 py-2 rounded-xl bg-[#07080B] border border-[#38BDF8]/35 flex flex-wrap items-center justify-between gap-2 text-xs">
                       <span className="text-[#38BDF8] font-bold tabular-nums">
                         📈 Última vez:{' '}
@@ -777,8 +800,19 @@ export function TrainTab({
                           ? `Máx ${prevBestMetric} ${metricUnit}`
                           : `${prevHist.sets.length} series`}
                       </span>
-                      <span className="text-[#FACC15] font-extrabold">
-                        ⚡ Supera este peso para +25 XP
+                      <span className="text-[#FACC15] font-extrabold tabular-nums">
+                        {sessionHasPrior && priorPrBest > 0
+                          ? `⚡ Supera ${priorPrBest} ${metricUnit} para +15 XP`
+                          : '⚡ Supera tu récord para +15 XP'}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="mt-2.5 px-3 py-2 rounded-xl bg-[#07080B] border border-[#1B1E26] flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                      <span className="text-[#8A92A2] font-semibold">
+                        🏅 1.ª sesión: guardaremos tu marca base de PR y 1RM
+                      </span>
+                      <span className="text-[#38BDF8] font-bold">
+                        Sin bono extra hoy
                       </span>
                     </div>
                   )}
@@ -839,10 +873,10 @@ export function TrainTab({
                             <span>{sIdx + 1}</span>
                             {s.done && s.isPR && (
                               <span
-                                title="Peso superado (+25 XP)"
+                                title="PR superado (+15 XP por ejercicio)"
                                 className="block text-[9px] font-black text-[#FACC15]"
                               >
-                                🔥+25
+                                🔥PR
                               </span>
                             )}
                           </div>
@@ -942,12 +976,13 @@ export function TrainTab({
                                   : ex.isBodyweight && Number(weightVal) === 0
                                   ? Number(repsVal)
                                   : Number(weightVal);
-                                const prevPR = user.prs[ex.id] || 0;
-                                const beatPR = score > prevPR && score > 0;
-                                const beatPrevious =
-                                  prevHist !== null &&
-                                  prevSetTargetScore > 0 &&
-                                  score > prevSetTargetScore;
+
+                                const beatSessionPrBonus =
+                                  sessionHasPrior &&
+                                  priorPrBest > 0 &&
+                                  score > priorPrBest;
+                                const beatStoredGlobalPr =
+                                  score > globalBaseline.bestPr && score > 0;
 
                                 const numericWeight = Number(weightVal) || 0;
                                 const numericReps = Number(repsVal) || 0;
@@ -957,7 +992,8 @@ export function TrainTab({
                                 const prevBestOneRm = getBestOneRmForExercise(
                                   user,
                                   ex.id,
-                                  ex.isCardio
+                                  ex.isCardio,
+                                  ex.name
                                 );
                                 const beatOneRm =
                                   !ex.isCardio &&
@@ -965,7 +1001,8 @@ export function TrainTab({
                                   estOneRm > prevBestOneRm;
 
                                 if (beatOneRm) {
-                                  const isAchievement = prevBestOneRm > 0;
+                                  const isAchievement =
+                                    sessionHasPrior && prevBestOneRm > 0;
                                   isOneRmPR = isAchievement;
                                   onRecordOneRM({
                                     exId: ex.id,
@@ -978,27 +1015,37 @@ export function TrainTab({
                                   });
                                 }
 
-                                if (beatPR || beatPrevious) {
+                                if (beatStoredGlobalPr || score > (user.prs[ex.id] || 0)) {
+                                  onRecordPR(ex.id, score);
+                                }
+
+                                const unit = ex.isCardio
+                                  ? ' min'
+                                  : ex.isBodyweight && Number(weightVal) === 0
+                                  ? ' reps'
+                                  : ' kg';
+
+                                if (beatSessionPrBonus) {
                                   isPR = true;
-                                  if (beatPR) {
-                                    onRecordPR(ex.id, score);
-                                  }
-                                  const unit = ex.isCardio
-                                    ? ' min'
-                                    : ex.isBodyweight && Number(weightVal) === 0
-                                    ? ' reps'
-                                    : ' kg';
-                                  if (beatPrevious && beatPR) {
+                                  const alreadyClaimedBonusInSession = item.sets.some(
+                                    (row, idx) => idx !== sIdx && row.done && row.isPR
+                                  );
+                                  if (!alreadyClaimedBonusInSession) {
                                     onToast(
-                                      `🔥 ¡Superaste tu peso anterior (${prevSetTargetScore} → ${score}${unit}) y nuevo PR! +25 XP`
-                                    );
-                                  } else if (beatPrevious) {
-                                    onToast(
-                                      `⚡ ¡Superaste tu peso anterior (${prevSetTargetScore} → ${score}${unit})! +25 XP`
+                                      `🔥 ¡Superaste tu PR en ${ex.name} (${priorPrBest} → ${score}${unit})! +15 XP al finalizar`
                                     );
                                   } else {
                                     onToast(
-                                      `🔥 ¡Nuevo PR en ${ex.name}! (${score}${unit}) +25 XP`
+                                      `🔥 ¡Nuevo récord en ${ex.name}: ${score}${unit}!`
+                                    );
+                                  }
+                                } else if (!sessionHasPrior && beatStoredGlobalPr) {
+                                  const alreadyNotifiedFirst = item.sets.some(
+                                    (row, idx) => idx !== sIdx && row.done
+                                  );
+                                  if (!alreadyNotifiedFirst) {
+                                    onToast(
+                                      `🏅 Marca inicial registrada en ${ex.name} (${score}${unit}). ¡En tu 2.ª sesión suma +15 XP al superarla!`
                                     );
                                   }
                                 }
@@ -1554,54 +1601,202 @@ export function TrainTab({
           title="🏁 ¡Entrenamiento Completado!"
           onClose={() => setSummaryInfo(null)}
         >
-          {summaryInfo && (
-            <div className="flex flex-col gap-4">
-              <div className="rounded-2xl border border-[#FACC15]/40 p-5 text-center bg-[radial-gradient(circle_at_50%_20%,rgba(14,165,233,0.06),#07080B_75%)]">
-                <CharacterAvatar charId={user.charId} size="lg" className="mx-auto" />
-                <div className="text-2xl font-black text-[#FACC15] mt-2 tabular-nums">
-                  +{summaryInfo.earnedXp} XP Ganados
-                </div>
-                <div className="text-xs text-[#8A92A2] mt-1 tabular-nums">
-                  {summaryInfo.completedSets} series completadas ·{' '}
-                  {summaryInfo.totalVolume} pts de volumen ·{' '}
-                  {summaryInfo.prCount} nuevos PRs
-                  {(summaryInfo.oneRmRecordCount || 0) > 0 &&
-                    ` · ${summaryInfo.oneRmRecordCount} logros de 1RM`}
-                </div>
-                {summaryInfo.newLevel > summaryInfo.prevLevel && (
-                  <div className="mt-3 px-3.5 py-2.5 rounded-xl bg-[#38BDF8]/12 border border-[#38BDF8]/50 text-sm font-extrabold text-[#38BDF8] tabular-nums">
-                    ⬆️ ¡Subiste de Nivel! ({summaryInfo.prevLevel} →{' '}
-                    {summaryInfo.newLevel})
-                  </div>
-                )}
-                {summaryInfo.evolved && (
-                  <div className="mt-3 p-3 rounded-xl bg-[#FACC15]/15 border border-[#FACC15]">
-                    <div className="text-xs font-bold text-[#FACC15]">
-                      ⚡ ¡Evolución Desbloqueada!
-                    </div>
-                    <div className="text-base font-black text-[#F1F5F9] mt-0.5">
-                      {summaryInfo.stageName}
-                    </div>
-                  </div>
-                )}
-              </div>
+          {summaryInfo && (() => {
+            const afterLv = getLevelInfo(user.xp);
+            const afterStage = getActiveCharacterStage(user);
+            const accent = summaryInfo.auraColor || '#FACC15';
+            const streakGrew = summaryInfo.streakCount > summaryInfo.prevStreakCount;
+            const sparks = [
+              { sx: '-46px', sy: '-32px' },
+              { sx: '46px', sy: '-34px' },
+              { sx: '-56px', sy: '8px' },
+              { sx: '56px', sy: '10px' },
+              { sx: '-28px', sy: '38px' },
+              { sx: '30px', sy: '36px' },
+            ];
+            return (
+              <div className="flex flex-col gap-3.5">
+                <div
+                  className="relative overflow-hidden rounded-2xl border p-5 text-center bg-[#07080B]"
+                  style={{ borderColor: `${accent}88` }}
+                >
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-0 streak-burst-flash"
+                    style={{
+                      background: `radial-gradient(circle at 50% 28%, ${accent}44, transparent 70%)`,
+                    }}
+                  />
 
-              <button
-                type="button"
-                onClick={() => {
-                  setSummaryInfo(null);
-                  onNavigateToCharacter();
-                }}
-                className="min-h-[46px] w-full rounded-xl bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] text-sm font-bold"
-              >
-                Ver Mi Personaje
-              </button>
-            </div>
-          )}
+                  <div className="relative z-10 flex flex-col items-center">
+                    <div className="relative inline-flex items-center justify-center">
+                      {sparks.map((sp, i) => (
+                        <span
+                          key={i}
+                          aria-hidden="true"
+                          className="streak-spark pointer-events-none absolute w-2 h-2 rounded-full"
+                          style={
+                            {
+                              backgroundColor: accent,
+                              '--sx': sp.sx,
+                              '--sy': sp.sy,
+                            } as React.CSSProperties
+                          }
+                        />
+                      ))}
+                      <CharacterAvatar
+                        charId={user.charId}
+                        stageName={afterStage.stageName}
+                        level={afterStage.effectiveLevel}
+                        size="lg"
+                        className="mx-auto"
+                      />
+                    </div>
+
+                    {/* 1.8s CSS Animated Streak Badge */}
+                    <div
+                      className="streak-counter-pop mt-3 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl border bg-[#0A0B0F]/95"
+                      style={{
+                        borderColor: `${accent}AA`,
+                        boxShadow: `0 0 18px ${accent}33`,
+                      }}
+                    >
+                      <Flame
+                        className="w-4 h-4 streak-icon-pulse shrink-0"
+                        style={{ color: accent }}
+                      />
+                      <span className="text-xs sm:text-sm font-black text-[#F1F5F9] tabular-nums">
+                        Racha diaria:{' '}
+                        <span style={{ color: accent }}>
+                          {summaryInfo.streakCount}{' '}
+                          {summaryInfo.streakCount === 1 ? 'día' : 'días'}
+                        </span>
+                        {streakGrew && summaryInfo.prevStreakCount > 0 && (
+                          <span className="text-[#22C55E] ml-1.5">
+                            ({summaryInfo.prevStreakCount} → {summaryInfo.streakCount})
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                    {summaryInfo.pausedSundayToday && (
+                      <div className="text-[11px] font-bold text-[#38BDF8] mt-1">
+                        🛡️ Pausa de domingo conservada
+                      </div>
+                    )}
+
+                    <div className="text-2xl font-black text-[#FACC15] mt-3 tabular-nums">
+                      +{summaryInfo.earnedXp} XP Total
+                    </div>
+                    {(summaryInfo.earnedCoins || 0) > 0 && (
+                      <div className="mt-1 inline-flex items-center gap-1.5 rounded-lg border border-amber-500/35 bg-amber-500/10 px-2.5 py-1 text-xs font-black text-amber-300 tabular-nums">
+                        🪙 +{summaryInfo.earnedCoins} monedas ganadas
+                      </div>
+                    )}
+                    <div className="text-xs text-[#8A92A2] mt-1 tabular-nums">
+                      {summaryInfo.completedSets} series ·{' '}
+                      {summaryInfo.totalVolume.toLocaleString('es-ES')} kg levantados
+                      {(summaryInfo.oneRmRecordCount || 0) > 0 &&
+                        ` · ${summaryInfo.oneRmRecordCount} nuevo(s) 1RM`}
+                    </div>
+
+                    {/* XP Breakdown */}
+                    <div className="w-full grid grid-cols-2 gap-2 mt-3.5 text-left">
+                      <div className="rounded-xl bg-[#0A0B0F] border border-[#1B1E26] px-3 py-2">
+                        <div className="text-[10px] font-bold uppercase text-[#8A92A2]">
+                          XP por Volumen
+                        </div>
+                        <div className="text-sm font-black text-[#38BDF8] tabular-nums mt-0.5">
+                          +{summaryInfo.baseVolumeXp} XP
+                        </div>
+                        <div className="text-[10px] text-[#8A92A2] tabular-nums">
+                          {summaryInfo.totalVolume.toLocaleString('es-ES')} kg ÷ 20
+                        </div>
+                      </div>
+                      <div className="rounded-xl bg-[#0A0B0F] border border-[#1B1E26] px-3 py-2">
+                        <div className="text-[10px] font-bold uppercase text-[#8A92A2]">
+                          Bono PRs (2.ª sesión+)
+                        </div>
+                        <div className="text-sm font-black text-[#FACC15] tabular-nums mt-0.5">
+                          +{summaryInfo.prBonusXp} XP
+                        </div>
+                        <div className="text-[10px] text-[#8A92A2] tabular-nums">
+                          {summaryInfo.surpassedExerciseCount > 0
+                            ? `${summaryInfo.surpassedExerciseCount} ej. × +15 XP`
+                            : 'Sin PR previo superado'}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Level & Next Evolution Progress */}
+                    <div className="w-full mt-3 rounded-xl bg-[#0A0B0F] border border-[#1B1E26] p-3 text-left">
+                      <div className="flex items-center justify-between text-xs font-bold tabular-nums">
+                        <span className="text-[#FACC15]">Nivel {afterLv.level}</span>
+                        <span className="text-[#8A92A2]">
+                          {afterLv.currentXp} / {afterLv.neededXp} XP ({afterLv.pct}%)
+                        </span>
+                      </div>
+                      <div className="h-2.5 rounded-full bg-[#030406] border border-[#1B1E26] overflow-hidden my-1.5">
+                        <div
+                          className="h-full transition-all duration-300"
+                          style={{
+                            width: `${afterLv.pct}%`,
+                            background: `linear-gradient(90deg, #38BDF8, ${accent})`,
+                          }}
+                        />
+                      </div>
+                      <div className="text-[11px] text-[#8A92A2] tabular-nums">
+                        {afterStage.nextStage ? (
+                          <>
+                            Próxima evolución:{' '}
+                            <strong className="text-[#38BDF8]">
+                              {afterStage.nextStage.phase}
+                            </strong>{' '}
+                            (Nv.{afterStage.nextStage.levelReq})
+                          </>
+                        ) : (
+                          <>👑 Transformación máxima desbloqueada: {afterStage.stageName}</>
+                        )}
+                      </div>
+                    </div>
+
+                    {summaryInfo.newLevel > summaryInfo.prevLevel && (
+                      <div className="w-full mt-2.5 px-3.5 py-2 rounded-xl bg-[#38BDF8]/12 border border-[#38BDF8]/50 text-xs font-extrabold text-[#38BDF8] tabular-nums">
+                        ⬆️ ¡Subiste de Nivel! ({summaryInfo.prevLevel} →{' '}
+                        {summaryInfo.newLevel})
+                      </div>
+                    )}
+                    {summaryInfo.evolved && (
+                      <div className="w-full mt-2.5 p-2.5 rounded-xl bg-[#FACC15]/15 border border-[#FACC15]">
+                        <div className="text-[11px] font-bold text-[#FACC15]">
+                          ⚡ ¡Evolución Desbloqueada!
+                        </div>
+                        <div className="text-sm font-black text-[#F1F5F9] mt-0.5">
+                          {summaryInfo.stageName}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSummaryInfo(null);
+                    onNavigateToCharacter();
+                  }}
+                  className="min-h-[46px] w-full rounded-xl bg-gradient-to-br from-[#1D4ED8] to-[#1E3A8A] text-[#F1F5F9] text-sm font-bold"
+                >
+                  Ver Mi Guerrero
+                </button>
+              </div>
+            );
+          })()}
         </Modal>
       </>
     );
   }
+
+  const idleStreak = computeDailyStreakSummary(user);
 
   // IDLE VIEW: ROUTINES + GENERATOR + MANUAL BUILDER + CATALOG
   return (
@@ -1609,11 +1804,19 @@ export function TrainTab({
       <section className="bg-[#0A0B0F] border border-[#FACC15]/40 rounded-2xl p-4 sm:p-5 flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-lg font-black text-[#F1F5F9]">
-              Centro de Entrenamiento
-            </h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-lg font-black text-[#F1F5F9]">
+                Centro de Entrenamiento
+              </h2>
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-[#07080B] border border-[#F97316]/45 text-[11px] font-extrabold text-[#F97316] tabular-nums">
+                <Flame className="w-3 h-3" />
+                Racha: {idleStreak.currentStreak}{' '}
+                {idleStreak.currentStreak === 1 ? 'día' : 'días'}
+                {idleStreak.pausedOnSunday ? ' · Pausa dom.' : ''}
+              </span>
+            </div>
             <p className="text-sm text-[#8A92A2]">
-              Confirma series, controla descansos y sube tu Ki
+              Confirma series, controla descansos y sube tu energía (1 XP por cada 20 kg)
             </p>
           </div>
           <button

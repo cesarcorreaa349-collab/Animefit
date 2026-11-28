@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { wsUrl } from '../config/api';
 import {
+  buildUserPvpCosmeticLoadout,
+  toShopLocalDateKey,
+} from '../data/shopCatalog';
+import {
+  DailyPvpXpTracker,
   FriendNotification,
+  PvpEmoteEvent,
   PvpInvite,
+  PvpMatchKind,
   PvpMatchState,
   UserProfile,
 } from '../types/animefit';
@@ -11,7 +18,7 @@ import {
   apiFetchWsToken,
   apiResumePvpSession,
   clearInMemoryAuthTokens,
-  getCharacterStage,
+  getActiveCharacterStage,
   getInMemoryWsToken,
   getLevelInfo,
 } from '../utils/animefit';
@@ -31,10 +38,18 @@ interface UsePvpSocketOptions {
   onSessionResumed?: (payload: AuthSessionPayload) => void;
   onReward: (payload: {
     xpEarned: number;
+    coinsEarned?: number;
+    matchKind?: PvpMatchKind;
+    xpCapReached?: boolean;
+    dailyXpEarned?: number;
+    dailyXpCap?: number;
+    notice?: string;
     won: boolean;
     totalXp?: number;
+    totalCoins?: number;
     pvpWins?: number;
     pvpLosses?: number;
+    pvpDailyXp?: DailyPvpXpTracker;
   }) => void;
 }
 
@@ -66,6 +81,9 @@ export function usePvpSocket({
   const [onlineUsers, setOnlineUsers] = useState<OnlinePvpUser[]>([]);
   const [incomingInvites, setIncomingInvites] = useState<PvpInvite[]>([]);
   const [roomCode, setRoomCode] = useState<string | null>(null);
+  const [queuedPublic, setQueuedPublic] = useState(false);
+  const [queueSize, setQueueSize] = useState(0);
+  const [lastEmote, setLastEmote] = useState<PvpEmoteEvent | null>(null);
   const [activeMatch, setActiveMatch] = useState<PvpMatchState | null>(null);
   const activeMatchRef = useRef<PvpMatchState | null>(null);
   activeMatchRef.current = activeMatch;
@@ -77,7 +95,7 @@ export function usePvpSocket({
   const sendAuth = useCallback(
     (ws: WebSocket, u: UserProfile, token?: string | null) => {
       const lv = getLevelInfo(u.xp || 0);
-      const st = getCharacterStage(u.charId, lv.level);
+      const st = getActiveCharacterStage(u);
       ws.send(
         JSON.stringify({
           type: 'pvp:auth',
@@ -88,6 +106,8 @@ export function usePvpSocket({
           level: lv.level,
           workoutsDone: u.workoutsDone || 0,
           prsCount: Object.keys(u.prs || {}).length,
+          cosmetics: buildUserPvpCosmeticLoadout(u),
+          localDateKey: toShopLocalDateKey(new Date()),
           ...(activeMatchRef.current?.id
             ? { activeMatchId: activeMatchRef.current.id }
             : {}),
@@ -106,6 +126,9 @@ export function usePvpSocket({
       setOnlineUsers([]);
       setIncomingInvites([]);
       setRoomCode(null);
+      setQueuedPublic(false);
+      setQueueSize(0);
+      setLastEmote(null);
       setActiveMatch(null);
       return;
     }
@@ -250,11 +273,23 @@ export function usePvpSocket({
           setRoomCode(String(msg.code || ''));
         } else if (type === 'pvp:room_closed') {
           setRoomCode(null);
+        } else if (type === 'pvp:queue_status') {
+          setQueuedPublic(Boolean(msg.queued));
+          setQueueSize(Number(msg.queueSize || 0));
+        } else if (type === 'pvp:emote') {
+          const ev = msg.event as PvpEmoteEvent | undefined;
+          if (ev && ev.id) {
+            setLastEmote(ev);
+          }
         } else if (type === 'pvp:match_state') {
           const match = msg.match as PvpMatchState;
           setActiveMatch(match);
           setRoomCode(null);
+          setQueuedPublic(false);
           setIncomingInvites([]);
+          if (match.lastEmote) {
+            setLastEmote(match.lastEmote);
+          }
         } else if (type === 'pvp:match_lost') {
           const lostId = String(msg.matchId || '');
           if (activeMatchRef.current?.id === lostId) {
@@ -270,13 +305,30 @@ export function usePvpSocket({
         } else if (type === 'pvp:reward') {
           onRewardRef.current({
             xpEarned: Number(msg.xpEarned || 0),
+            coinsEarned: Number(msg.coinsEarned || 0),
+            matchKind:
+              typeof msg.matchKind === 'string'
+                ? (msg.matchKind as PvpMatchKind)
+                : undefined,
+            xpCapReached: Boolean(msg.xpCapReached),
+            dailyXpEarned:
+              typeof msg.dailyXpEarned === 'number' ? msg.dailyXpEarned : undefined,
+            dailyXpCap:
+              typeof msg.dailyXpCap === 'number' ? msg.dailyXpCap : undefined,
+            notice: typeof msg.notice === 'string' ? msg.notice : undefined,
             won: Boolean(msg.won),
             totalXp:
               typeof msg.totalXp === 'number' ? msg.totalXp : undefined,
+            totalCoins:
+              typeof msg.totalCoins === 'number' ? msg.totalCoins : undefined,
             pvpWins:
               typeof msg.pvpWins === 'number' ? msg.pvpWins : undefined,
             pvpLosses:
               typeof msg.pvpLosses === 'number' ? msg.pvpLosses : undefined,
+            pvpDailyXp:
+              msg.pvpDailyXp && typeof msg.pvpDailyXp === 'object'
+                ? (msg.pvpDailyXp as DailyPvpXpTracker)
+                : undefined,
           });
         } else if (type === 'social:friend_added') {
           const notification = msg.notification as
@@ -307,6 +359,7 @@ export function usePvpSocket({
           wsRef.current = null;
         }
         setConnected(false);
+        setQueuedPublic(false);
         if (cancelled) return;
         const immediate = fastRetryPending;
         fastRetryPending = false;
@@ -348,12 +401,19 @@ export function usePvpSocket({
     };
   }, [user?.username, serverSessionEpoch, retryNonce, sendAuth]);
 
-  // Keep server seed fresh when user levels up / changes character
+  // Keep server seed fresh when user levels up / changes character / equips PvP cosmetics
   useEffect(() => {
     if (user && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       sendAuth(wsRef.current, user, getInMemoryWsToken());
     }
-  }, [user?.charId, user?.xp, user?.workoutsDone, sendAuth]);
+  }, [
+    user?.charId,
+    user?.xp,
+    user?.workoutsDone,
+    user?.equippedCosmetics,
+    user?.inventory,
+    sendAuth,
+  ]);
 
   const send = useCallback((payload: unknown) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -372,6 +432,9 @@ export function usePvpSocket({
     onlineUsers,
     incomingInvites,
     roomCode,
+    queuedPublic,
+    queueSize,
+    lastEmote,
     activeMatch,
     sendChallenge: (toUsername: string) =>
       send({ type: 'pvp:challenge', toUsername }),
@@ -389,6 +452,13 @@ export function usePvpSocket({
       return send({ type: 'pvp:leave_room' });
     },
     joinRoom: (code: string) => send({ type: 'pvp:join_room', code }),
+    joinPublicQueue: () => send({ type: 'pvp:queue_join' }),
+    leavePublicQueue: () => {
+      setQueuedPublic(false);
+      return send({ type: 'pvp:queue_leave' });
+    },
+    sendEmote: (matchId: string, emoteId: string) =>
+      send({ type: 'pvp:emote', matchId, emoteId }),
     sendAction: (
       matchId: string,
       action: 'strike' | 'special' | 'guard' | 'ultimate'

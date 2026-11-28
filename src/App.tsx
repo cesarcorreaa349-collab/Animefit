@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Bell,
   BookOpen,
+  Coins,
   Dumbbell,
   HelpCircle,
   LogOut,
+  Store,
   Swords,
   Trophy,
   Zap,
@@ -20,7 +22,10 @@ import { Modal } from './components/Modal';
 import { OnboardingScreen } from './components/OnboardingScreen';
 import { PvpTab } from './components/PvpTab';
 import { RankingTab } from './components/RankingTab';
+import { ShopTab } from './components/ShopTab';
 import { StoryTab } from './components/StoryTab';
+import { RoomClearRewardResult } from './components/RoomTowerMode';
+import { SurvivalWaveClearResult } from './components/SurvivalModeView';
 import { TrainTab } from './components/TrainTab';
 import {
   WeeklySundaySummaryModal,
@@ -31,6 +36,16 @@ import {
   applyDetectedStepsToWellness,
   getLocalDateKey,
 } from './components/WellnessTrackerSection';
+import {
+  getAccessoryById,
+  SECONDARY_CURRENCY_ICON,
+  SECONDARY_CURRENCY_NAME,
+} from './data/accessoriesCatalog';
+import {
+  getShopItemById,
+  getUnlockedCharacterIds,
+  toShopLocalDateKey,
+} from './data/shopCatalog';
 import { useAutoPedometer } from './hooks/useAutoPedometer';
 import { useInactivityNotifications } from './hooks/useInactivityNotifications';
 import { usePvpSocket } from './hooks/usePvpSocket';
@@ -38,10 +53,13 @@ import {
   ActiveWorkout,
   AppDB,
   AthleteProfileSetup,
+  DailyPvpXpTracker,
   DailyWellnessState,
+  EquippedCosmetics,
   ExerciseDef,
   FriendNotification,
   MainTab,
+  PvpMatchKind,
   Routine,
   RoutineFolder,
   StoryChapter,
@@ -62,19 +80,39 @@ import {
   assignCharacterBySex,
   buildAppDBFromServerAuth,
   buildRoutinesFromOnboarding,
+  buyAccessoryShopItemTransaction,
+  buyShopCharacterTransaction,
+  buyShopItemTransaction,
   clearLocalDeviceCache,
+  computeNextDailyStreakOnWorkout,
+  computeRoomClearSecondaryReward,
+  computeStoryCoinReward,
+  computeStorySecondaryReward,
+  computeSurvivalCoinReward,
+  computeSurvivalRecordXpReward,
+  computeWorkoutCoinReward,
+  consumeInventoryItemTransaction,
+  equipAccessoryTransaction,
+  equipCosmeticTransaction,
+  getActiveCharacterStage,
   getCharacterById,
-  getCharacterStage,
   getExerciseById,
+  getGlobalExerciseBaseline,
   getLevelInfo,
   getStoryDailyStatus,
+  installGlobalAudioUnlockOnce,
   loadDB,
   markExplicitLogout,
   mergeRichUserProfiles,
   persistDB,
+  playConsumeItemSound,
+  playEvolutionSound,
+  playShopCoinSound,
+  playStreakCelebrationSound,
   pushDBToServer,
   removeUserFromDB,
   resolveUsername,
+  sellInventoryItemTransaction,
   syncDBFromBackups,
 } from './utils/animefit';
 
@@ -100,34 +138,48 @@ export default function App() {
   const [levelUpEvent, setLevelUpEvent] =
     useState<LevelUpCelebrationEvent | null>(null);
   const levelUpTimerRef = useRef<number | null>(null);
+  const lastCelebratedUnlockRef = useRef<string | null>(null);
 
   const triggerLevelUpCelebration = useCallback(
     (
       newLevel: number,
       evolved: boolean,
       stageName: string,
-      auraColor: string
+      auraColor: string,
+      charId?: string,
+      prevStageName?: string
     ) => {
+      const dedupeKey = `${charId || 'hero'}_${newLevel}_${stageName}`;
+      if (lastCelebratedUnlockRef.current === dedupeKey) {
+        return;
+      }
+      lastCelebratedUnlockRef.current = dedupeKey;
+
       if (levelUpTimerRef.current) {
         window.clearTimeout(levelUpTimerRef.current);
       }
+      playEvolutionSound(evolved);
       setLevelUpEvent({
         id: Date.now(),
         newLevel,
         evolved,
         stageName,
+        prevStageName,
+        charId,
         auraColor,
       });
       levelUpTimerRef.current = window.setTimeout(() => {
         setLevelUpEvent(null);
         levelUpTimerRef.current = null;
-      }, 3400);
+      }, 2900);
     },
     []
   );
 
   useEffect(() => {
+    const cleanupUnlock = installGlobalAudioUnlockOnce();
     return () => {
+      cleanupUnlock();
       if (levelUpTimerRef.current) {
         window.clearTimeout(levelUpTimerRef.current);
       }
@@ -308,12 +360,30 @@ export default function App() {
   const handlePvpReward = useCallback(
     (payload: {
       xpEarned: number;
+      coinsEarned?: number;
+      matchKind?: PvpMatchKind;
+      xpCapReached?: boolean;
+      dailyXpEarned?: number;
+      dailyXpCap?: number;
+      notice?: string;
       won: boolean;
       totalXp?: number;
+      totalCoins?: number;
       pvpWins?: number;
       pvpLosses?: number;
+      pvpDailyXp?: DailyPvpXpTracker;
     }) => {
       if (!currentUser) return;
+      const prevLevel = getLevelInfo(currentUser.xp).level;
+      const prevStage = getActiveCharacterStage(currentUser);
+      const nextXpEst =
+        typeof payload.totalXp === 'number'
+          ? payload.totalXp
+          : (currentUser.xp || 0) + payload.xpEarned;
+      const nextLevel = getLevelInfo(nextXpEst).level;
+      const nextStage = getActiveCharacterStage({ ...currentUser, xp: nextXpEst });
+      const evolved = nextStage.stageName !== prevStage.stageName;
+
       updateDb((prev) => {
         const u = prev.users[currentUser.username];
         if (!u) return prev;
@@ -327,6 +397,10 @@ export default function App() {
                 typeof payload.totalXp === 'number'
                   ? payload.totalXp
                   : (u.xp || 0) + payload.xpEarned,
+              coins:
+                typeof payload.totalCoins === 'number'
+                  ? payload.totalCoins
+                  : Math.max(0, (u.coins || 0) + (payload.coinsEarned || 0)),
               pvpWins:
                 typeof payload.pvpWins === 'number'
                   ? payload.pvpWins
@@ -335,17 +409,39 @@ export default function App() {
                 typeof payload.pvpLosses === 'number'
                   ? payload.pvpLosses
                   : (u.pvpLosses || 0) + (payload.won ? 0 : 1),
+              pvpDailyXp: payload.pvpDailyXp ?? u.pvpDailyXp,
             },
           },
         };
       }, true);
-      pushToast(
-        payload.won
-          ? `🏆 ¡Victoria PvP! +${payload.xpEarned} XP ganados.`
-          : `⚔️ Duelo PvP finalizado: +${payload.xpEarned} XP de combate.`
-      );
+
+      if (nextLevel > prevLevel || evolved) {
+        triggerLevelUpCelebration(
+          nextLevel,
+          evolved,
+          nextStage.stageName,
+          nextStage.char.auraColor,
+          currentUser.charId,
+          prevStage.stageName
+        );
+      }
+
+      const coinsGained = Math.max(0, Number(payload.coinsEarned || 0));
+      if (payload.notice) {
+        pushToast(payload.notice);
+      } else {
+        const rewardParts: string[] = [];
+        if (payload.xpEarned > 0) rewardParts.push(`+${payload.xpEarned} XP`);
+        if (coinsGained > 0) rewardParts.push(`+${coinsGained} monedas`);
+        const suffix = rewardParts.length > 0 ? rewardParts.join(' · ') : '0 XP / 0 monedas';
+        pushToast(
+          payload.won
+            ? `🏆 ¡Victoria PvP! ${suffix}.`
+            : `⚔️ Duelo PvP finalizado: ${suffix}.`
+        );
+      }
     },
-    [currentUser, pushToast, updateDb]
+    [currentUser, pushToast, triggerLevelUpCelebration, updateDb]
   );
 
   const toastedFriendNotifIdsRef = useRef<Set<string>>(new Set());
@@ -664,10 +760,19 @@ export default function App() {
               done: false,
               isPR: false,
             }));
+      const def = getExerciseById(re.exId, currentUser);
+      const baseline = getGlobalExerciseBaseline(currentUser, re.exId, {
+        exName: def?.name,
+        isCardio: def?.isCardio,
+        isBodyweight: def?.isBodyweight,
+      });
       return {
         exId: re.exId,
+        exName: def?.name,
         targetReps: re.targetReps,
         notes: re.notes,
+        baselinePr: baseline.bestPr,
+        baselineHasPrior: baseline.hasPriorRecord,
         sets,
       };
     });
@@ -805,20 +910,72 @@ export default function App() {
 
     let completedSets = 0;
     let prCount = 0;
+    let surpassedExerciseCount = 0;
     let oneRmRecordCount = 0;
     let totalVolume = 0;
 
+    const updatedPrs: Record<string, number> = { ...(currentUser.prs || {}) };
+    const updatedOneRm: Record<string, number> = {
+      ...(currentUser.oneRmRecords || {}),
+    };
+
     activeWorkout.exercises.forEach((item) => {
+      const exDef = getExerciseById(item.exId, currentUser);
+      const isCardio = Boolean(exDef?.isCardio);
+      const isBodyweight = Boolean(exDef?.isBodyweight);
+      const exName = item.exName || exDef?.name;
+
+      // Baseline BEFORE this session started (prefer snapshotted baseline; fallback to history-only)
+      let hadPrior = item.baselineHasPrior;
+      let priorPr = item.baselinePr;
+      if (hadPrior === undefined || priorPr === undefined) {
+        const histBaseline = getGlobalExerciseBaseline(
+          { ...currentUser, prs: {}, oneRmRecords: {} },
+          item.exId,
+          { exName, isCardio, isBodyweight }
+        );
+        hadPrior = histBaseline.hasPriorRecord;
+        priorPr = histBaseline.bestPr;
+      }
+
+      let bestSessionScore = 0;
+      let bestSessionOneRm = 0;
+
       item.sets.forEach((s) => {
-        if (s.done) {
-          completedSets++;
-          if (s.isPR) prCount++;
-          if (s.isOneRmPR) oneRmRecordCount++;
-          const w = Number(s.weight) || 0;
-          const r = Number(s.reps) || 0;
-          totalVolume += w > 0 ? w * r : r * 15;
+        if (!s.done) return;
+        completedSets++;
+        if (s.isOneRmPR) oneRmRecordCount++;
+        const w = Math.max(0, Number(s.weight) || 0);
+        const r = Math.max(0, Number(s.reps) || 0);
+        totalVolume += w * r;
+
+        const score = isCardio ? w : isBodyweight && w === 0 ? r : w;
+        if (score > bestSessionScore) bestSessionScore = score;
+        if (!isCardio && w > 0 && r > 0) {
+          const est =
+            r <= 1
+              ? Math.round(w * 10) / 10
+              : Math.round(w * (1 + r / 30) * 10) / 10;
+          if (est > bestSessionOneRm) bestSessionOneRm = est;
         }
       });
+
+      if (bestSessionScore > 0) {
+        if (bestSessionScore > (updatedPrs[item.exId] || 0)) {
+          updatedPrs[item.exId] = bestSessionScore;
+        }
+        if (hadPrior && priorPr > 0 && bestSessionScore > priorPr) {
+          surpassedExerciseCount++;
+          prCount++;
+        } else if (!hadPrior) {
+          // 1st time recording this exercise: save initial PR silently with 0 extra XP
+        }
+      }
+      if (!isCardio && bestSessionOneRm > 0) {
+        if (bestSessionOneRm > (updatedOneRm[item.exId] || 0)) {
+          updatedOneRm[item.exId] = bestSessionOneRm;
+        }
+      }
     });
 
     if (completedSets === 0) {
@@ -827,27 +984,38 @@ export default function App() {
     }
 
     const prevLevel = getLevelInfo(currentUser.xp).level;
-    const prevStage = getCharacterStage(currentUser.charId, prevLevel).stageName;
+    const prevStageObj = getActiveCharacterStage(currentUser);
+    const prevStage = prevStageObj.stageName;
 
-    const earnedXp = 40 + completedSets * 15 + prCount * 25;
+    const roundedVolume = Math.round(totalVolume);
+    const baseVolumeXp = Math.floor(totalVolume / 20);
+    const prBonusXp = surpassedExerciseCount * 15;
+    const earnedXp = baseVolumeXp + prBonusXp;
+    const earnedCoins = computeWorkoutCoinReward(
+      baseVolumeXp,
+      surpassedExerciseCount
+    );
+
     const nextXp = currentUser.xp + earnedXp;
     const newLevel = getLevelInfo(nextXp).level;
-    const newStageObj = getCharacterStage(currentUser.charId, newLevel);
+    const newStageObj = getActiveCharacterStage({ ...currentUser, xp: nextXp });
     const evolved = newStageObj.stageName !== prevStage;
+
+    const streakUpdate = computeNextDailyStreakOnWorkout(currentUser, new Date());
 
     const historyEntry = {
       date: new Date().toISOString(),
       name: activeWorkout.name,
       durationMs: Date.now() - activeWorkout.startedAt,
       sets: completedSets,
-      volume: Math.round(totalVolume),
+      volume: roundedVolume,
       xp: earnedXp,
       exercises: activeWorkout.exercises,
     };
 
     updateDb((prev) => {
       const u = prev.users[currentUser.username];
-      const nextHistory = [...(u.history || []), historyEntry].slice(-40);
+      const nextHistory = [...(u.history || []), historyEntry].slice(-60);
       const nextActive = { ...prev.activeWorkouts };
       delete nextActive[currentUser.username];
       return {
@@ -858,33 +1026,51 @@ export default function App() {
           [currentUser.username]: {
             ...u,
             xp: nextXp,
+            coins: Math.max(0, Number(u.coins || 0)) + earnedCoins,
             workoutsDone: (u.workoutsDone || 0) + 1,
+            prs: updatedPrs,
+            oneRmRecords: updatedOneRm,
+            dailyStreakCount: streakUpdate.nextStreak,
+            dailyStreakBest: streakUpdate.bestStreak,
+            dailyStreakLastDate: streakUpdate.localDateKey,
             history: nextHistory,
           },
         },
       };
     });
 
-    if (newLevel > prevLevel) {
+    playStreakCelebrationSound();
+
+    if (newLevel > prevLevel || evolved) {
       triggerLevelUpCelebration(
         newLevel,
         evolved,
         newStageObj.stageName,
-        newStageObj.char.auraColor
+        newStageObj.char.auraColor,
+        currentUser.charId,
+        prevStage
       );
     }
 
     return {
       earnedXp,
+      earnedCoins,
+      baseVolumeXp,
+      prBonusXp,
+      surpassedExerciseCount,
       completedSets,
       prCount,
       oneRmRecordCount,
-      totalVolume: Math.round(totalVolume),
+      totalVolume: roundedVolume,
       prevLevel,
       newLevel,
       evolved,
       stageName: newStageObj.stageName,
       charIcon: newStageObj.char.icon,
+      auraColor: newStageObj.char.auraColor || '#FACC15',
+      streakCount: streakUpdate.nextStreak,
+      prevStreakCount: streakUpdate.prevStreak,
+      pausedSundayToday: streakUpdate.pausedSundayToday,
     };
   };
 
@@ -1259,8 +1445,8 @@ export default function App() {
   );
 
   const handleCompleteStoryChapter = useCallback(
-    (chapter: StoryChapter): boolean => {
-      if (!currentUser) return false;
+    (chapter: StoryChapter): { rewarded: boolean; coinsEarned: number; secondaryEarned: number } => {
+      if (!currentUser) return { rewarded: false, coinsEarned: 0, secondaryEarned: 0 };
       const currStory: StoryProgress = currentUser.story || {
         completedChapters: [],
         choices: {},
@@ -1291,19 +1477,24 @@ export default function App() {
             },
           };
         }, true);
-        return false;
+        return { rewarded: false, coinsEarned: 0, secondaryEarned: 0 };
       }
 
       const daily = getStoryDailyStatus(currStory.lastChapterCompletedAt);
       if (!daily.canCompleteNewChapter) {
         pushToast('⏳ Ya completaste tu capítulo diario. Vuelve mañana para desbloquear el siguiente.');
-        return false;
+        return { rewarded: false, coinsEarned: 0, secondaryEarned: 0 };
       }
 
       const nowIso = new Date().toISOString();
       const prevLevel = getLevelInfo(currentUser.xp).level;
+      const prevStage = getActiveCharacterStage(currentUser).stageName;
       const nextXp = currentUser.xp + chapter.xpReward;
       const newLevel = getLevelInfo(nextXp).level;
+      const newStageObj = getActiveCharacterStage({ ...currentUser, xp: nextXp });
+      const evolved = newStageObj.stageName !== prevStage;
+      const coinsEarned = computeStoryCoinReward(chapter.number);
+      const secondaryEarned = computeStorySecondaryReward(chapter.number);
 
       updateDb((prev) => {
         const u = prev.users[currentUser.username];
@@ -1316,6 +1507,9 @@ export default function App() {
             [currentUser.username]: {
               ...u,
               xp: u.xp + chapter.xpReward,
+              coins: Math.max(0, Number(u.coins || 0)) + coinsEarned,
+              secondaryCoins:
+                Math.max(0, Number(u.secondaryCoins || 0)) + secondaryEarned,
               story: {
                 ...baseStory,
                 completedChapters: baseStory.completedChapters.includes(chapter.id)
@@ -1333,12 +1527,436 @@ export default function App() {
         };
       }, true);
 
+      if (newLevel > prevLevel || evolved) {
+        triggerLevelUpCelebration(
+          newLevel,
+          evolved,
+          newStageObj.stageName,
+          newStageObj.char.auraColor,
+          currentUser.charId,
+          prevStage
+        );
+      }
+
       pushToast(
         newLevel > prevLevel
-          ? `🔥 ¡Cap. ${chapter.number} completado! +${chapter.xpReward} XP diarios · ¡Subiste a Nivel ${newLevel}!`
-          : `🏆 ¡Cap. ${chapter.number} completado! +${chapter.xpReward} XP diarios ganados.`
+          ? `🔥 ¡Cap. ${chapter.number} completado! +${chapter.xpReward} XP · +${coinsEarned} monedas · ${SECONDARY_CURRENCY_ICON} +${secondaryEarned} ${SECONDARY_CURRENCY_NAME} · ¡Nivel ${newLevel}!`
+          : `🏆 ¡Cap. ${chapter.number} completado! +${chapter.xpReward} XP · +${coinsEarned} monedas · ${SECONDARY_CURRENCY_ICON} +${secondaryEarned} ${SECONDARY_CURRENCY_NAME}.`
       );
+      return { rewarded: true, coinsEarned, secondaryEarned };
+    },
+    [currentUser, pushToast, triggerLevelUpCelebration, updateDb]
+  );
+
+  const handleRoomTowerCleared = useCallback(
+    (clearedRoom: number): RoomClearRewardResult => {
+      if (!currentUser) {
+        return {
+          totalSecondaryEarned: 0,
+          baseSecondary: 0,
+          firstBossBonus: 0,
+          isBossRoom: false,
+          isFirstBossMilestone: false,
+          isNewBestFloor: false,
+          nextBestFloor: 0,
+          nextBossMilestones: [],
+        };
+      }
+      const latestUser = latestDbRef.current.users[currentUser.username] || currentUser;
+      const calc = computeRoomClearSecondaryReward(latestUser, clearedRoom);
+
+      updateDb((prev) => {
+        const u = prev.users[currentUser.username];
+        if (!u) return prev;
+        const freshCalc = computeRoomClearSecondaryReward(u, clearedRoom);
+        return {
+          ...prev,
+          users: {
+            ...prev.users,
+            [currentUser.username]: {
+              ...u,
+              secondaryCoins:
+                Math.max(0, Number(u.secondaryCoins || 0)) +
+                freshCalc.totalSecondaryEarned,
+              roomBestFloor: freshCalc.nextBestFloor,
+              roomBossMilestonesDefeated: freshCalc.nextBossMilestones,
+            },
+          },
+        };
+      }, true);
+
+      if (calc.isFirstBossMilestone) {
+        pushToast(
+          `👑 ¡Hito Sala ${clearedRoom}! Jefe derrotado por primera vez: ${SECONDARY_CURRENCY_ICON} +${calc.totalSecondaryEarned} ${SECONDARY_CURRENCY_NAME}.`
+        );
+      } else if (calc.isNewBestFloor && clearedRoom > 1) {
+        pushToast(
+          `🏆 ¡Nuevo récord en Torre Anime: Sala ${clearedRoom}! ${SECONDARY_CURRENCY_ICON} +${calc.totalSecondaryEarned} ${SECONDARY_CURRENCY_NAME}.`
+        );
+      }
+
+      return calc;
+    },
+    [currentUser, pushToast, updateDb]
+  );
+
+  const handleSurvivalWaveCleared = useCallback(
+    (clearedWave: number): SurvivalWaveClearResult => {
+      if (!currentUser) {
+        return {
+          xpEarned: 0,
+          coinsEarned: 0,
+          isNewRecord: false,
+          nextBestWave: clearedWave,
+        };
+      }
+      const prevBest = currentUser.survivalBestWave || 0;
+      const reward = computeSurvivalRecordXpReward(clearedWave, prevBest);
+      const localDateKey = toShopLocalDateKey(new Date());
+      const coinRes = computeSurvivalCoinReward(
+        currentUser,
+        clearedWave,
+        reward.isNewRecord,
+        localDateKey
+      );
+
+      if (!reward.isNewRecord && coinRes.coinsEarned <= 0) {
+        return { ...reward, coinsEarned: 0 };
+      }
+
+      const prevLevel = getLevelInfo(currentUser.xp).level;
+      const prevStage = getActiveCharacterStage(currentUser).stageName;
+      const nextXp = currentUser.xp + reward.xpEarned;
+      const newLevel = getLevelInfo(nextXp).level;
+      const newStageObj = getActiveCharacterStage({ ...currentUser, xp: nextXp });
+      const evolved = newStageObj.stageName !== prevStage;
+
+      updateDb((prev) => {
+        const u = prev.users[currentUser.username];
+        if (!u) return prev;
+        const latestCoinRes = computeSurvivalCoinReward(
+          u,
+          clearedWave,
+          reward.isNewRecord,
+          localDateKey
+        );
+        const serverAwareBest = Math.max(
+          u.survivalBestWave || 0,
+          reward.nextBestWave
+        );
+        return {
+          ...prev,
+          users: {
+            ...prev.users,
+            [currentUser.username]: {
+              ...u,
+              xp: (u.xp || 0) + reward.xpEarned,
+              coins:
+                Math.max(0, Number(u.coins || 0)) + latestCoinRes.coinsEarned,
+              survivalDailyCoins: latestCoinRes.nextTracker,
+              survivalBestWave: serverAwareBest,
+            },
+          },
+        };
+      }, true);
+
+      if (reward.isNewRecord && (newLevel > prevLevel || evolved)) {
+        triggerLevelUpCelebration(
+          newLevel,
+          evolved,
+          newStageObj.stageName,
+          newStageObj.char.auraColor,
+          currentUser.charId,
+          prevStage
+        );
+      }
+
+      return { ...reward, coinsEarned: coinRes.coinsEarned };
+    },
+    [currentUser, triggerLevelUpCelebration, updateDb]
+  );
+
+  const handleBuyShopItem = useCallback(
+    (itemId: string) => {
+      if (!currentUser) return;
+      const dateKey = toShopLocalDateKey(new Date());
+      const res = buyShopItemTransaction(currentUser, itemId, dateKey);
+      if (!res.ok || !res.user) {
+        pushToast(res.error || 'No se pudo completar la compra.');
+        return;
+      }
+      playShopCoinSound('buy');
+      updateDb((prev) => {
+        const u = prev.users[currentUser.username];
+        if (!u) return prev;
+        const freshRes = buyShopItemTransaction(u, itemId, dateKey);
+        if (!freshRes.ok || !freshRes.user) return prev;
+        return {
+          ...prev,
+          users: {
+            ...prev.users,
+            [currentUser.username]: freshRes.user,
+          },
+        };
+      }, true);
+      const itemName = getShopItemById(itemId)?.name || 'Objeto';
+      pushToast(
+        `🪙 Compraste "${itemName}". Saldo: ${res.balanceBefore} → ${res.balanceAfter} monedas.`
+      );
+    },
+    [currentUser, pushToast, updateDb]
+  );
+
+  const handleBuyShopCharacter = useCallback(
+    (charId: string) => {
+      if (!currentUser) return;
+      const dateKey = toShopLocalDateKey(new Date());
+      const res = buyShopCharacterTransaction(currentUser, charId, dateKey);
+      if (!res.ok || !res.user) {
+        pushToast(res.error || 'No se pudo desbloquear este guerrero.');
+        return;
+      }
+      playShopCoinSound('buy');
+      updateDb((prev) => {
+        const u = prev.users[currentUser.username];
+        if (!u) return prev;
+        const freshRes = buyShopCharacterTransaction(u, charId, dateKey);
+        if (!freshRes.ok || !freshRes.user) return prev;
+        return {
+          ...prev,
+          users: {
+            ...prev.users,
+            [currentUser.username]: freshRes.user,
+          },
+        };
+      }, true);
+      const ch = getCharacterById(charId);
+      pushToast(
+        `⚡ ¡${ch.name} desbloqueado en Fase 1 (${ch.stages[0]?.phase || 'Base'})! Saldo: ${res.balanceBefore} → ${res.balanceAfter}.`
+      );
+    },
+    [currentUser, pushToast, updateDb]
+  );
+
+  const handleSellInventoryItem = useCallback(
+    (itemId: string) => {
+      if (!currentUser) return;
+      const res = sellInventoryItemTransaction(currentUser, itemId);
+      if (!res.ok || !res.user) {
+        pushToast(res.error || 'No se pudo vender este objeto.');
+        return;
+      }
+      playShopCoinSound('sell');
+      updateDb((prev) => {
+        const u = prev.users[currentUser.username];
+        if (!u) return prev;
+        const freshRes = sellInventoryItemTransaction(u, itemId);
+        if (!freshRes.ok || !freshRes.user) return prev;
+        return {
+          ...prev,
+          users: {
+            ...prev.users,
+            [currentUser.username]: freshRes.user,
+          },
+        };
+      }, true);
+      const itemName = getShopItemById(itemId)?.name || 'Objeto';
+      pushToast(
+        `💰 Vendiste "${itemName}" (+${res.deltaCoins} monedas · 70%). Saldo: ${res.balanceBefore} → ${res.balanceAfter}.`
+      );
+    },
+    [currentUser, pushToast, updateDb]
+  );
+
+  const handleUseXpCapsule = useCallback(
+    (itemId: string) => {
+      if (!currentUser) return;
+      const prevLevel = getLevelInfo(currentUser.xp).level;
+      const prevStage = getActiveCharacterStage(currentUser);
+      const res = consumeInventoryItemTransaction(currentUser, itemId);
+      if (!res.ok || !res.user) {
+        pushToast(res.error || 'No tienes unidades disponibles.');
+        return;
+      }
+      playConsumeItemSound('energy');
+      const newLevel = getLevelInfo(res.user.xp).level;
+      const newStage = getActiveCharacterStage(res.user);
+      const evolved = newStage.stageName !== prevStage.stageName;
+
+      updateDb((prev) => {
+        const u = prev.users[currentUser.username];
+        if (!u) return prev;
+        const freshRes = consumeInventoryItemTransaction(u, itemId);
+        if (!freshRes.ok || !freshRes.user) return prev;
+        return {
+          ...prev,
+          users: {
+            ...prev.users,
+            [currentUser.username]: freshRes.user,
+          },
+        };
+      }, true);
+
+      if (newLevel > prevLevel || evolved) {
+        triggerLevelUpCelebration(
+          newLevel,
+          evolved,
+          newStage.stageName,
+          newStage.char.auraColor,
+          currentUser.charId,
+          prevStage.stageName
+        );
+      }
+      const itemName = getShopItemById(itemId)?.name || 'Cápsula XP';
+      pushToast(`✨ ${itemName} usada: +${res.xpAdded || 0} XP ganados.`);
+    },
+    [currentUser, pushToast, triggerLevelUpCelebration, updateDb]
+  );
+
+  const handleConsumeCombatItem = useCallback(
+    (itemId: string): boolean => {
+      if (!currentUser) return false;
+      const latestUser = latestDbRef.current.users[currentUser.username];
+      if (!latestUser) return false;
+      const checkRes = consumeInventoryItemTransaction(latestUser, itemId);
+      if (!checkRes.ok || !checkRes.user) return false;
+
+      updateDb((prev) => {
+        const u = prev.users[currentUser.username];
+        if (!u) return prev;
+        const freshRes = consumeInventoryItemTransaction(u, itemId);
+        if (!freshRes.ok || !freshRes.user) return prev;
+        return {
+          ...prev,
+          users: {
+            ...prev.users,
+            [currentUser.username]: freshRes.user,
+          },
+        };
+      }, true);
       return true;
+    },
+    [currentUser, updateDb]
+  );
+
+  const handleEquipCosmetic = useCallback(
+    (slot: keyof EquippedCosmetics, itemId: string | undefined) => {
+      if (!currentUser) return;
+      updateDb((prev) => {
+        const u = prev.users[currentUser.username];
+        if (!u) return prev;
+        const nextUser = itemId
+          ? equipCosmeticTransaction(u, itemId)
+          : {
+              ...u,
+              equippedCosmetics: {
+                ...(u.equippedCosmetics || {}),
+                [slot]: null,
+              },
+            };
+        return {
+          ...prev,
+          users: {
+            ...prev.users,
+            [currentUser.username]: nextUser,
+          },
+        };
+      }, true);
+      if (itemId) {
+        const itemName = getShopItemById(itemId)?.name || 'Estético';
+        pushToast(`✨ Estético actualizado: "${itemName}".`);
+      } else {
+        pushToast('Estético desequipado.');
+      }
+    },
+    [currentUser, pushToast, updateDb]
+  );
+
+  const handleBuyAccessory = useCallback(
+    (accessoryId: string) => {
+      if (!currentUser) return;
+      const dateKey = toShopLocalDateKey(new Date());
+      const res = buyAccessoryShopItemTransaction(currentUser, accessoryId, dateKey);
+      if (!res.ok || !res.user) {
+        pushToast(res.error || 'No se pudo comprar este accesorio.');
+        return;
+      }
+      playShopCoinSound('buy');
+      updateDb((prev) => {
+        const u = prev.users[currentUser.username];
+        if (!u) return prev;
+        const fresh = buyAccessoryShopItemTransaction(u, accessoryId, dateKey);
+        if (!fresh.ok || !fresh.user) return prev;
+        return {
+          ...prev,
+          users: {
+            ...prev.users,
+            [currentUser.username]: fresh.user,
+          },
+        };
+      }, true);
+      const def = getAccessoryById(accessoryId);
+      pushToast(
+        `${SECONDARY_CURRENCY_ICON} Compraste "${def?.name || 'Accesorio'}". Saldo: ${res.balanceBefore} → ${res.balanceAfter} ${SECONDARY_CURRENCY_NAME}.`
+      );
+    },
+    [currentUser, pushToast, updateDb]
+  );
+
+  const handleEquipAccessory = useCallback(
+    (
+      accessoryId: string | null,
+      slotOverride?: keyof NonNullable<UserProfile['equippedAccessories']>
+    ) => {
+      if (!currentUser) return;
+      updateDb((prev) => {
+        const u = prev.users[currentUser.username];
+        if (!u) return prev;
+        const nextUser = equipAccessoryTransaction(u, accessoryId, slotOverride);
+        return {
+          ...prev,
+          users: {
+            ...prev.users,
+            [currentUser.username]: nextUser,
+          },
+        };
+      }, true);
+      if (accessoryId) {
+        const def = getAccessoryById(accessoryId);
+        pushToast(`🛡️ Accesorio actualizado: "${def?.name || 'Accesorio'}".`);
+      } else {
+        pushToast('Accesorio desequipado.');
+      }
+    },
+    [currentUser, pushToast, updateDb]
+  );
+
+  const handleSwitchCharacter = useCallback(
+    (charId: string) => {
+      if (!currentUser) return;
+      const unlocked = getUnlockedCharacterIds(currentUser);
+      if (!unlocked.includes(charId)) {
+        pushToast('Primero desbloquea este guerrero en la Tienda.');
+        return;
+      }
+      updateDb((prev) => {
+        const u = prev.users[currentUser.username];
+        if (!u) return prev;
+        return {
+          ...prev,
+          users: {
+            ...prev.users,
+            [currentUser.username]: {
+              ...u,
+              charId,
+            },
+          },
+        };
+      }, true);
+      const nextStage = getActiveCharacterStage({ ...currentUser, charId });
+      pushToast(
+        `🥷 Guerrero activo: ${nextStage.char.name} (${nextStage.stageName}).`
+      );
     },
     [currentUser, pushToast, updateDb]
   );
@@ -1464,10 +2082,19 @@ export default function App() {
                 done: false,
                 isPR: false,
               }));
+        const def = getExerciseById(re.exId, currentUser);
+        const baseline = getGlobalExerciseBaseline(currentUser, re.exId, {
+          exName: def?.name,
+          isCardio: def?.isCardio,
+          isBodyweight: def?.isBodyweight,
+        });
         return {
           exId: re.exId,
+          exName: def?.name,
           targetReps: re.targetReps,
           notes: re.notes,
+          baselinePr: baseline.bestPr,
+          baselineHasPrior: baseline.hasPriorRecord,
           sets,
         };
       });
@@ -1569,7 +2196,8 @@ export default function App() {
   }
 
   const lv = getLevelInfo(currentUser.xp);
-  const st = getCharacterStage(currentUser.charId, lv.level);
+  const st = getActiveCharacterStage(currentUser);
+  const userCoins = Math.max(0, Math.floor(Number(currentUser.coins || 0)));
 
   return (
     <div className="min-h-screen relative pb-24 md:pb-10">
@@ -1582,12 +2210,12 @@ export default function App() {
 
       {/* Top Navigation Bar */}
       <header className="sticky top-0 z-30 bg-[#030406]/92 backdrop-blur-md border-b border-[#1B1E26]">
-        <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between gap-6">
+        <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
           <div className="text-lg font-black tracking-tight whitespace-nowrap shrink-0 font-[family-name:var(--font-display)]">
             ⚡ ANIME<span className="text-[#FACC15]">FIT</span>
           </div>
 
-          <nav className="hidden md:flex items-center gap-6 text-sm font-semibold">
+          <nav className="hidden md:flex items-center gap-5 text-sm font-semibold">
             <button
               type="button"
               onClick={() => setMainTab('entrenar')}
@@ -1626,6 +2254,18 @@ export default function App() {
             </button>
             <button
               type="button"
+              onClick={() => setMainTab('tienda')}
+              className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors inline-flex items-center gap-1 ${
+                mainTab === 'tienda'
+                  ? 'text-[#FACC15] border-[#FACC15]'
+                  : 'text-[#8A92A2] border-transparent hover:text-[#F1F5F9]'
+              }`}
+            >
+              <Store className="w-3.5 h-3.5" />
+              <span>Tienda</span>
+            </button>
+            <button
+              type="button"
               onClick={() => setMainTab('personaje')}
               className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors ${
                 mainTab === 'personaje'
@@ -1661,6 +2301,19 @@ export default function App() {
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               type="button"
+              onClick={() => setMainTab('tienda')}
+              title="Abrir Tienda e Inventario"
+              className={`min-h-[36px] px-2.5 rounded-lg border inline-flex items-center gap-1.5 text-xs font-black tabular-nums transition-colors shrink-0 ${
+                mainTab === 'tienda'
+                  ? 'bg-[#FACC15]/15 border-[#FACC15] text-[#FACC15]'
+                  : 'bg-[#101218] border-[#1B1E26] text-[#FACC15] hover:border-[#FACC15]/70'
+              }`}
+            >
+              <Coins className="w-3.5 h-3.5 text-[#FACC15]" />
+              <span>{userCoins}</span>
+            </button>
+            <button
+              type="button"
               onClick={() => setTutorialOpen(true)}
               aria-label="Tutorial de bienvenida"
               title="Guía de pestañas"
@@ -1671,11 +2324,16 @@ export default function App() {
             <button
               type="button"
               onClick={() => setEditingProfileOpen(true)}
-              className="min-h-[36px] pl-1.5 pr-2.5 rounded-lg bg-[#101218] border border-[#1B1E26] hover:border-[#FACC15] flex items-center gap-2 transition-colors whitespace-nowrap max-w-[180px] sm:max-w-[240px]"
+              className="min-h-[36px] pl-1.5 pr-2.5 rounded-lg bg-[#101218] border border-[#1B1E26] hover:border-[#FACC15] flex items-center gap-2 transition-colors whitespace-nowrap max-w-[160px] sm:max-w-[230px]"
               title={`Editar perfil de ${currentUser.username}`}
             >
-              <CharacterAvatar charId={st.char.id} size="xs" />
-              <span className="text-xs font-extrabold text-[#F1F5F9] truncate max-w-[96px] sm:max-w-[150px]">
+              <CharacterAvatar
+                charId={st.char.id}
+                stageName={st.stageName}
+                level={st.effectiveLevel}
+                size="xs"
+              />
+              <span className="text-xs font-extrabold text-[#F1F5F9] truncate max-w-[78px] sm:max-w-[140px]">
                 {currentUser.username}
               </span>
               <span className="text-[11px] font-bold text-[#FACC15] tabular-nums shrink-0">
@@ -1785,6 +2443,12 @@ export default function App() {
             onCompleteChapter={handleCompleteStoryChapter}
             onStartMissionWorkout={handleStartStoryMissionWorkout}
             onSetStoryRoutine={handleSetStoryRoutine}
+            onSurvivalWaveCleared={handleSurvivalWaveCleared}
+            onRoomCleared={handleRoomTowerCleared}
+            onBuyAccessory={handleBuyAccessory}
+            onEquipAccessory={handleEquipAccessory}
+            onConsumeItem={handleConsumeCombatItem}
+            onOpenShop={() => setMainTab('tienda')}
           />
         )}
 
@@ -1797,6 +2461,9 @@ export default function App() {
             onlineUsers={pvp.onlineUsers}
             incomingInvites={pvp.incomingInvites}
             roomCode={pvp.roomCode}
+            queuedPublic={pvp.queuedPublic}
+            queueSize={pvp.queueSize}
+            lastEmote={pvp.lastEmote}
             activeMatch={pvp.activeMatch}
             onRetryConnect={pvp.retryConnect}
             onAddFriendByName={handleAddFriendByName}
@@ -1806,12 +2473,30 @@ export default function App() {
             onCreateRoom={pvp.createRoom}
             onLeaveRoom={pvp.leaveRoom}
             onJoinRoom={pvp.joinRoom}
+            onJoinPublicQueue={pvp.joinPublicQueue}
+            onLeavePublicQueue={pvp.leavePublicQueue}
+            onSendEmote={pvp.sendEmote}
             onSendAction={pvp.sendAction}
             onSendClashTap={pvp.sendClashTap}
             onForfeitMatch={pvp.forfeitMatch}
             onRequestRematch={pvp.requestRematch}
             onClearMatch={pvp.clearMatch}
             onToast={pushToast}
+            onOpenShop={() => setMainTab('tienda')}
+          />
+        )}
+
+        {mainTab === 'tienda' && (
+          <ShopTab
+            user={currentUser}
+            onBuyItem={handleBuyShopItem}
+            onBuyCharacter={handleBuyShopCharacter}
+            onSellItem={handleSellInventoryItem}
+            onUseXpCapsule={handleUseXpCapsule}
+            onEquipCosmetic={handleEquipCosmetic}
+            onSwitchCharacter={handleSwitchCharacter}
+            onBuyAccessory={handleBuyAccessory}
+            onEquipAccessory={handleEquipAccessory}
           />
         )}
 
@@ -1821,14 +2506,8 @@ export default function App() {
             onDeleteAccount={handleDeleteAccount}
             onChangePassword={handleChangePassword}
             onEditProfile={() => setEditingProfileOpen(true)}
-            reminderSupported={inactivityReminder.supported}
-            reminderPermission={inactivityReminder.permission}
-            reminderEnabled={inactivityReminder.enabled}
-            hoursSinceActivity={inactivityReminder.hoursSinceActivity}
-            onRequestReminderPermission={inactivityReminder.requestNotificationPermission}
-            onRefreshReminderPermission={inactivityReminder.refreshPermission}
-            onToggleReminder={inactivityReminder.toggleNotifications}
-            onTestReminder={inactivityReminder.sendTestNotification}
+            onOpenShop={() => setMainTab('tienda')}
+            onEquipAccessory={handleEquipAccessory}
           />
         )}
 
@@ -1948,6 +2627,8 @@ export default function App() {
                 >
                   <CharacterAvatar
                     charId={assigned.id}
+                    stageName={assigned.stages[0]?.phase}
+                    level={1}
                     size="xl"
                     className="border-0"
                   />

@@ -1,18 +1,29 @@
 import { useState } from 'react';
-import { Check, Eye, EyeOff, KeyRound, Pencil, Trash2 } from 'lucide-react';
+import { Check, Eye, EyeOff, KeyRound, Pencil, Store, Trash2 } from 'lucide-react';
 import { UserProfile } from '../types/animefit';
+import {
+  ACCESSORY_SLOT_ICONS,
+  ACCESSORY_SLOT_LABELS,
+  getAccessoryById,
+  getAccessorySlotKey,
+  getEquippedAccessoriesList,
+  getOwnedAccessoryIds,
+  SECONDARY_CURRENCY_COLOR,
+  SECONDARY_CURRENCY_ICON,
+  SECONDARY_CURRENCY_NAME,
+} from '../data/accessoriesCatalog';
 import { computeTrainingPvpBonus, getCharacterPhaseMoveset } from '../data/movesets';
+import { getShopItemById, getUnlockedCharacterIds } from '../data/shopCatalog';
 import {
   TRAINING_STYLE_OPTIONS,
+  computeDailyStreakSummary,
   formatDuration,
-  getAllOneRmRecordEntries,
-  getCharacterStage,
-  getExerciseById,
+  getActiveCharacterStage,
+  getGlobalDisplayRecords,
   getLevelInfo,
 } from '../utils/animefit';
 import { CharacterAvatar } from './CharacterAvatar';
 import { Modal } from './Modal';
-import { NotificationSettingsCard } from './NotificationSettingsCard';
 import { PhaseMovesetPreview } from './PhaseMovesetPreview';
 import { WeeklySundaySummaryCard } from './WeeklySundaySummary';
 import { WeeklyVolumeChart } from './WeeklyVolumeChart';
@@ -25,14 +36,11 @@ interface CharacterTabProps {
     newPassword: string
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
   onEditProfile?: () => void;
-  reminderSupported: boolean;
-  reminderPermission: NotificationPermission | 'unsupported';
-  reminderEnabled: boolean;
-  hoursSinceActivity: number | null;
-  onRequestReminderPermission: () => void | Promise<unknown>;
-  onRefreshReminderPermission: () => void;
-  onToggleReminder: () => void;
-  onTestReminder: () => void;
+  onOpenShop?: () => void;
+  onEquipAccessory?: (
+    accessoryId: string | null,
+    slotOverride?: keyof NonNullable<UserProfile['equippedAccessories']>
+  ) => void;
 }
 
 export function CharacterTab({
@@ -40,14 +48,8 @@ export function CharacterTab({
   onDeleteAccount,
   onChangePassword,
   onEditProfile,
-  reminderSupported,
-  reminderPermission,
-  reminderEnabled,
-  hoursSinceActivity,
-  onRequestReminderPermission,
-  onRefreshReminderPermission,
-  onToggleReminder,
-  onTestReminder,
+  onOpenShop,
+  onEquipAccessory,
 }: CharacterTabProps) {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
@@ -93,39 +95,61 @@ export function CharacterTab({
   };
 
   const lv = getLevelInfo(user.xp);
-  const st = getCharacterStage(user.charId, lv.level);
+  const st = getActiveCharacterStage(user);
   const ch = st.char;
   const activeMoveset = getCharacterPhaseMoveset(
     user.charId,
-    lv.level,
+    st.effectiveLevel,
     st.stageName
   );
   const trainingBonus = computeTrainingPvpBonus(
     user.workoutsDone || 0,
     (user.history || []).map((h) => h.date)
   );
-  const prs = Object.entries(user.prs || {});
-  const oneRmMap = getAllOneRmRecordEntries(user);
-  const recordExIds = Array.from(
-    new Set([...Object.keys(user.prs || {}), ...Object.keys(oneRmMap)])
-  );
+  const dailyStreak = computeDailyStreakSummary(user);
+  const globalRecords = getGlobalDisplayRecords(user);
   const history = (user.history || []).slice().reverse().slice(0, 10);
   const todayWellness = getTodayWellnessLog(user);
+  const coins = Math.max(0, Math.floor(Number(user.coins || 0)));
+  const secondaryCoins = Math.max(0, Math.floor(Number(user.secondaryCoins || 0)));
+  const ownedAccessoryIds = getOwnedAccessoryIds(user);
+  const equippedAccessories = getEquippedAccessoriesList(user.equippedAccessories);
+  const roomBestFloor = Math.max(0, Math.floor(Number(user.roomBestFloor || 0)));
+  const roomBossMilestones = Array.isArray(user.roomBossMilestonesDefeated)
+    ? [...user.roomBossMilestonesDefeated].sort((a, b) => a - b)
+    : [];
+  const unlockedCharsCount = getUnlockedCharacterIds(user).length;
+  const equippedAura = user.equippedCosmetics?.auraId
+    ? getShopItemById(user.equippedCosmetics.auraId)
+    : undefined;
+  const equippedTitle = user.equippedCosmetics?.titleId
+    ? getShopItemById(user.equippedCosmetics.titleId)
+    : undefined;
+  const equippedEmblem = user.equippedCosmetics?.emblemId
+    ? getShopItemById(user.equippedCosmetics.emblemId)
+    : undefined;
+  const ringAccent = equippedAura?.accentColor || ch.auraColor;
 
   return (
     <div className="flex flex-col gap-5">
       <section
         className="rounded-2xl border p-6 text-center bg-[radial-gradient(circle_at_50%_20%,rgba(14,165,233,0.06),#0A0B0F_75%)]"
-        style={{ borderColor: `${ch.auraColor}66` }}
+        style={{ borderColor: `${ringAccent}66` }}
       >
         <div
           className="w-32 h-32 mx-auto mb-3 rounded-full flex items-center justify-center border-[3px] bg-[#030406] aura-pulse"
           style={{
-            borderColor: ch.auraColor,
-            boxShadow: `0 0 28px ${ch.auraColor}55`,
+            borderColor: ringAccent,
+            boxShadow: `0 0 28px ${ringAccent}55`,
           }}
         >
-          <CharacterAvatar charId={ch.id} size="xl" className="border-0" />
+          <CharacterAvatar
+            charId={ch.id}
+            stageName={st.stageName}
+            level={st.effectiveLevel}
+            size="xl"
+            className="border-0"
+          />
         </div>
 
         <div className="text-xs font-semibold text-[#8A92A2]">
@@ -133,14 +157,75 @@ export function CharacterTab({
           <span className="font-bold" style={{ color: activeMoveset.energy.color }}>
             {activeMoveset.energy.name}
           </span>
+          {equippedAura && (
+            <span className="ml-1.5" style={{ color: ringAccent }}>
+              · {equippedAura.icon} {equippedAura.name}
+            </span>
+          )}
         </div>
-        <h2 className="text-2xl font-black text-[#F1F5F9] mt-0.5">{ch.name}</h2>
+        <h2 className="text-2xl font-black text-[#F1F5F9] mt-0.5 flex items-center justify-center gap-2">
+          {equippedEmblem && <span title={equippedEmblem.name}>{equippedEmblem.icon}</span>}
+          <span>{ch.name}</span>
+        </h2>
+        {equippedTitle && (
+          <div className="text-xs font-bold text-amber-300 mt-0.5">
+            {equippedTitle.icon} {equippedTitle.name}
+          </div>
+        )}
         <div
           className="text-base font-extrabold mt-1"
-          style={{ color: ch.auraColor }}
+          style={{ color: ringAccent }}
         >
           ⚡ {st.stageName}
         </div>
+
+        {equippedAccessories.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center justify-center gap-1.5">
+            {equippedAccessories.map((acc) => (
+              <span
+                key={acc.id}
+                className="px-2.5 py-0.5 rounded-lg border text-[11px] font-bold bg-[#07080B]"
+                style={{
+                  borderColor: `${acc.accentColor}55`,
+                  color: acc.accentColor,
+                }}
+              >
+                {acc.icon} {acc.name}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {onOpenShop && (
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={onOpenShop}
+              className="inline-flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 px-3.5 py-2 text-xs font-black text-amber-300 transition tabular-nums"
+            >
+              <Store className="w-3.5 h-3.5" />
+              <span>Tienda · 🪙 {coins.toLocaleString('es-ES')}</span>
+              <span className="text-slate-400 font-semibold">· {unlockedCharsCount} guerreros</span>
+            </button>
+            <div
+              className="inline-flex items-center gap-1.5 rounded-xl border bg-[#07080B] px-3 py-2 text-xs font-black tabular-nums"
+              style={{
+                borderColor: `${SECONDARY_CURRENCY_COLOR}55`,
+                color: SECONDARY_CURRENCY_COLOR,
+              }}
+            >
+              <span>{SECONDARY_CURRENCY_ICON}</span>
+              <span>
+                {secondaryCoins.toLocaleString('es-ES')} {SECONDARY_CURRENCY_NAME}
+              </span>
+              {roomBestFloor > 0 && (
+                <span className="text-slate-400 font-semibold">
+                  · Sala {roomBestFloor}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
 
         <div className="max-w-md mx-auto mt-4">
           <div className="flex items-center justify-between text-xs font-bold tabular-nums">
@@ -173,6 +258,18 @@ export function CharacterTab({
 
         <div className="mt-5 pt-4 border-t border-[#1B1E26] flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-sm tabular-nums">
           <div>
+            <span className="font-bold text-[#F97316]">
+              🔥 {dailyStreak.currentStreak}
+            </span>{' '}
+            <span className="text-[#8A92A2]">
+              {dailyStreak.currentStreak === 1 ? 'Día racha' : 'Días racha'}
+              {dailyStreak.pausedOnSunday ? ' (Pausa dom.)' : ''}
+            </span>
+          </div>
+          <span className="text-[#1B1E26]" aria-hidden="true">
+            ·
+          </span>
+          <div>
             <span className="font-bold text-[#38BDF8]">
               {user.workoutsDone || 0}
             </span>{' '}
@@ -182,7 +279,7 @@ export function CharacterTab({
             ·
           </span>
           <div>
-            <span className="font-bold text-[#FACC15]">{prs.length}</span>{' '}
+            <span className="font-bold text-[#FACC15]">{globalRecords.length}</span>{' '}
             <span className="text-[#8A92A2]">PRs Logrados</span>
           </div>
           <span className="text-[#1B1E26]" aria-hidden="true">
@@ -217,6 +314,71 @@ export function CharacterTab({
         </div>
       </section>
 
+      <section className="bg-[#0A0B0F] border border-[#1B1E26] rounded-2xl p-4 sm:p-5 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="text-base font-extrabold text-[#F1F5F9]">
+              Accesorios Anime & Torre de Salas
+            </h3>
+            <p className="text-xs text-[#8A92A2]">
+              Colección: {ownedAccessoryIds.length} accesorios · Mejor sala:{' '}
+              <strong className="text-[#2DD4BF]">
+                {roomBestFloor > 0 ? `Sala ${roomBestFloor}` : 'Sin iniciar'}
+              </strong>
+              {roomBossMilestones.length > 0 && (
+                <span className="ml-1.5 text-amber-300">
+                  · Jefes: {roomBossMilestones.map((m) => `S.${m}`).join(', ')}
+                </span>
+              )}
+            </p>
+          </div>
+          <span
+            className="text-xs font-black tabular-nums px-2.5 py-1 rounded-lg border bg-[#07080B]"
+            style={{
+              borderColor: `${SECONDARY_CURRENCY_COLOR}44`,
+              color: SECONDARY_CURRENCY_COLOR,
+            }}
+          >
+            {SECONDARY_CURRENCY_ICON} {secondaryCoins.toLocaleString('es-ES')}{' '}
+            {SECONDARY_CURRENCY_NAME}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+          {(['helm', 'armor', 'ring', 'amulet'] as const).map((slot) => {
+            const slotKey = getAccessorySlotKey(slot);
+            const eqDef = getAccessoryById(user.equippedAccessories?.[slotKey]);
+            return (
+              <div
+                key={slot}
+                className="rounded-xl border border-[#1B1E26] bg-[#07080B] px-3 py-2.5 flex items-center justify-between gap-2"
+              >
+                <div className="min-w-0">
+                  <div className="text-[10px] font-bold text-[#8A92A2]">
+                    {ACCESSORY_SLOT_ICONS[slot]} {ACCESSORY_SLOT_LABELS[slot]}
+                  </div>
+                  <div
+                    className="text-xs font-black truncate mt-0.5"
+                    style={{ color: eqDef ? eqDef.accentColor : '#64748B' }}
+                  >
+                    {eqDef ? `${eqDef.icon} ${eqDef.name}` : 'Sin equipar'}
+                  </div>
+                </div>
+                {eqDef && onEquipAccessory && (
+                  <button
+                    type="button"
+                    onClick={() => onEquipAccessory(null, slotKey)}
+                    className="text-[10px] font-bold px-2 py-1 rounded-md border border-[#1B1E26] bg-[#101218] text-slate-300 hover:text-white shrink-0"
+                  >
+                    Quitar
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
       <WeeklyVolumeChart history={user.history || []} />
 
       <WeeklySundaySummaryCard user={user} />
@@ -234,7 +396,7 @@ export function CharacterTab({
 
           <div className="flex flex-col gap-2">
             {ch.stages.map((s, idx) => {
-              const unlocked = lv.level >= s.levelReq;
+              const unlocked = st.effectiveLevel >= s.levelReq;
               const isCurrent = st.stageName === s.phase;
               return (
                 <div
@@ -250,15 +412,23 @@ export function CharacterTab({
                       : '#1B1E26',
                   }}
                 >
-                  <div className="min-w-0">
-                    <div
-                      className="text-sm font-bold truncate"
-                      style={{ color: isCurrent ? ch.auraColor : '#F1F5F9' }}
-                    >
-                      Fase {idx + 1}: {s.phase}
-                    </div>
-                    <div className="text-xs text-[#8A92A2] tabular-nums">
-                      Requisito: Nivel {s.levelReq}
+                  <div className="flex items-center gap-3 min-w-0">
+                    <CharacterAvatar
+                      charId={ch.id}
+                      stageName={s.phase}
+                      level={s.levelReq}
+                      size="sm"
+                    />
+                    <div className="min-w-0">
+                      <div
+                        className="text-sm font-bold truncate"
+                        style={{ color: isCurrent ? ch.auraColor : '#F1F5F9' }}
+                      >
+                        Fase {idx + 1}: {s.phase}
+                      </div>
+                      <div className="text-xs text-[#8A92A2] tabular-nums">
+                        Requisito: Nivel {s.levelReq}
+                      </div>
                     </div>
                   </div>
                   <span
@@ -285,41 +455,37 @@ export function CharacterTab({
         <div className="lg:col-span-6 flex flex-col gap-5">
           <section className="bg-[#0A0B0F] border border-[#1B1E26] rounded-2xl p-4 sm:p-5">
             <h3 className="text-base font-extrabold text-[#F1F5F9] mb-3">
-              Récords Personales (PRs) y 1RM
+              Récords Personales (PRs) y 1RM Globales
             </h3>
-            {recordExIds.length === 0 ? (
+            {globalRecords.length === 0 ? (
               <p className="text-sm text-[#8A92A2]">
-                Completa series en tus entrenamientos para registrar tus primeros PRs y 1RM estimado.
+                Completa series en tus entrenamientos para registrar tus primeros PRs y 1RM estimado entre todas tus rutinas.
               </p>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {recordExIds.map((exId) => {
-                  const ex = getExerciseById(exId, user);
-                  if (!ex) return null;
-                  const val = user.prs?.[exId];
-                  const oneRm = oneRmMap[exId] || 0;
-                  const unit = ex.isCardio
+                {globalRecords.map((rec) => {
+                  const unit = rec.isCardio
                     ? 'min'
-                    : ex.isBodyweight
+                    : rec.isBodyweight
                     ? 'kg / reps'
                     : 'kg';
                   return (
                     <div
-                      key={exId}
+                      key={rec.key}
                       className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl bg-[#07080B] border border-[#1B1E26]"
                     >
                       <span className="text-xs font-bold text-[#F1F5F9] line-clamp-2">
-                        {ex.name}
+                        {rec.name}
                       </span>
                       <div className="text-right whitespace-nowrap shrink-0 tabular-nums">
-                        {typeof val === 'number' && val > 0 && (
+                        {rec.pr > 0 && (
                           <div className="text-xs font-black text-[#FACC15]">
-                            {val} {unit}
+                            {rec.pr} {unit}
                           </div>
                         )}
-                        {!ex.isCardio && oneRm > 0 && (
+                        {!rec.isCardio && rec.oneRm > 0 && (
                           <div className="text-[11px] font-bold text-[#38BDF8]">
-                            1RM: {oneRm} kg
+                            1RM: {rec.oneRm} kg
                           </div>
                         )}
                       </div>
@@ -422,17 +588,6 @@ export function CharacterTab({
               </div>
             </section>
           )}
-
-          <NotificationSettingsCard
-            supported={reminderSupported}
-            permission={reminderPermission}
-            enabled={reminderEnabled}
-            hoursSinceActivity={hoursSinceActivity}
-            onRequestPermission={onRequestReminderPermission}
-            onRefreshPermission={onRefreshReminderPermission}
-            onToggleReminder={onToggleReminder}
-            onTestReminder={onTestReminder}
-          />
 
           <section className="bg-[#0A0B0F] border border-[#1B1E26] rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="min-w-0">

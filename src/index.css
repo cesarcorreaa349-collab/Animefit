@@ -191,6 +191,307 @@
   animation: pvpHitShake 0.26s ease-out;
 }
 
+@keyframes streakBurstFlash {
+  0% {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  16% {
+    opacity: 0.65;
+    transform: scale(1.01);
+  }
+  65% {
+    opacity: 0.22;
+    transform: scale(1.02);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.03);
+  }
+}
+
+@keyframes streakIconPulse {
+  0% {
+    transform: scale(0.65) rotate(-8deg);
+    opacity: 0.2;
+  }
+  22% {
+    transform: scale(1.24) rotate(4deg);
+    opacity: 1;
+  }
+  44% {
+    transform: scale(0.96) rotate(-2deg);
+  }
+  66% {
+    transform: scale(1.08) rotate(1deg);
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+}
+
+@keyframes streakCounterPop {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.86);
+  }
+  26% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1.1);
+  }
+  52% {
+    transform: translateY(0) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes streakSparkFly {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.4);
+  }
+  20% {
+    opacity: 1;
+    transform: translate(calc(var(--sx, 20px) * 0.45), calc(var(--sy, -20px) * 0.45)) scale(1.15);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--sx, 28px), var(--sy, -28px)) scale(0.2);
+  }
+}
+
+.streak-burst-flash {
+  animation: streakBurstFlash 1.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.streak-icon-pulse {
+  animation: streakIconPulse 1.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.streak-counter-pop {
+  animation: streakCounterPop 1.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.streak-spark {
+  animation: streakSparkFly 1.65s cubic-bezier(0.16, 1, 0.3, 1) 0.1s forwards;
+}
+
+/* Transformation / Evolution Showcase (2.8s) */
+@keyframes evoPrevPortrait {
+  0% {
+    opacity: 0;
+    transform: scale(0.88);
+  }
+  18% {
+    opacity: 1;
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  42% {
+    opacity: 1;
+    transform: scale(1.08);
+    filter: brightness(1.8) saturate(1.4);
+  }
+  52% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+}
+
+@keyframes evoNewPortrait {
+  0%, 38% {
+    opacity: 0;
+    transform: scale(0.65);
+    filter: brightness(2.2);
+  }
+  56% {
+    opacity: 1;
+    transform: scale(1.12);
+    filter: brightness(1.25);
+  }
+  72% {
+    opacity: 1;
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  90% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+@keyframes evoStageCard {
+  0% {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.94);
+  }
+  12% {
+    opacity: 1;
+    transform: translateY(0) scale(1.02);
+  }
+  20% {
+    transform: translateY(0) scale(1);
+  }
+  86% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+}
+
+.evo-prev-portrait {
+  animation: evoPrevPortrait 2.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.evo-new-portrait {
+  animation: evoNewPortrait 2.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.evo-stage-card {
+  animation: evoStageCard 2.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Short Combat Animations (Story, Survival, PvP) */
+@keyframes combatAttackRight {
+  0% {
+    transform: translateX(0) scale(1);
+  }
+  32% {
+    transform: translateX(22px) scale(1.06);
+  }
+  100% {
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes combatAttackLeft {
+  0% {
+    transform: translateX(0) scale(1);
+  }
+  32% {
+    transform: translateX(-22px) scale(1.06);
+  }
+  100% {
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes combatHitRecoil {
+  0% {
+    transform: translateX(0) scale(1);
+    filter: brightness(1);
+  }
+  20% {
+    transform: translateX(-6px) scale(0.95);
+    filter: brightness(1.35) saturate(1.4);
+  }
+  45% {
+    transform: translateX(6px) scale(0.96);
+  }
+  70% {
+    transform: translateX(-3px) scale(0.98);
+  }
+  100% {
+    transform: translateX(0) scale(1);
+    filter: brightness(1);
+  }
+}
+
+@keyframes combatGuardAura {
+  0% {
+    transform: scale(1);
+    filter: drop-shadow(0 0 0 rgba(34, 197, 94, 0));
+  }
+  35% {
+    transform: scale(1.05);
+    filter: drop-shadow(0 0 14px rgba(34, 197, 94, 0.75));
+  }
+  100% {
+    transform: scale(1);
+    filter: drop-shadow(0 0 0 rgba(34, 197, 94, 0));
+  }
+}
+
+@keyframes combatChargePulse {
+  0%, 100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  45% {
+    transform: scale(1.07);
+    filter: brightness(1.3) drop-shadow(0 0 14px rgba(250, 204, 21, 0.65));
+  }
+}
+
+@keyframes combatSpecialSurge {
+  0% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  30% {
+    transform: scale(1.1);
+    filter: brightness(1.4) drop-shadow(0 0 18px rgba(56, 189, 248, 0.75));
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+
+@keyframes pvpVsSlideIn {
+  0% {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.combat-anim-attack-right {
+  animation: combatAttackRight 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.combat-anim-attack-left {
+  animation: combatAttackLeft 0.34s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.combat-anim-hit {
+  animation: combatHitRecoil 0.34s ease-out;
+}
+
+.combat-anim-guard {
+  animation: combatGuardAura 0.44s ease-out;
+}
+
+.combat-anim-charge {
+  animation: combatChargePulse 0.48s ease-out;
+}
+
+.combat-anim-special {
+  animation: combatSpecialSurge 0.46s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.pvp-vs-banner {
+  animation: pvpVsSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .aura-pulse,
   .levelup-flash,
@@ -200,7 +501,21 @@
   .pvp-tech-flash,
   .pvp-ring-burst,
   .pvp-callout-pop,
-  .pvp-hit-shake {
+  .pvp-hit-shake,
+  .streak-burst-flash,
+  .streak-icon-pulse,
+  .streak-counter-pop,
+  .streak-spark,
+  .evo-prev-portrait,
+  .evo-new-portrait,
+  .evo-stage-card,
+  .combat-anim-attack-right,
+  .combat-anim-attack-left,
+  .combat-anim-hit,
+  .combat-anim-guard,
+  .combat-anim-charge,
+  .combat-anim-special,
+  .pvp-vs-banner {
     animation: none;
   }
 }

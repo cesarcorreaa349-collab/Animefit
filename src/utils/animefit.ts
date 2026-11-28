@@ -13,6 +13,56 @@ import {
   Routine,
   UserProfile,
 } from '../types/animefit';
+import {
+  DAILY_ITEM_PURCHASE_LIMIT,
+  DAILY_SURVIVAL_COIN_CAP,
+  getCharacterEffectiveXp,
+  getCharacterShopPrice,
+  getDailyShopRotation,
+  getResaleValue,
+  getShopItemById,
+  getUnlockedCharacterIds,
+  getUserDailyShopPurchasesCount,
+  isSingleOwnershipCosmetic,
+  toShopLocalDateKey,
+} from '../data/shopCatalog';
+import {
+  ACCESSORY_DAILY_PURCHASE_LIMIT,
+  getAccessoryById,
+  getAccessorySlotKey,
+  getDailyAccessoryShopRotation,
+  getOwnedAccessoryIds,
+  getUserAccessoryDailyPurchasesCount,
+  SECONDARY_CURRENCY_NAME,
+} from '../data/accessoriesCatalog';
+import { getCombatAudioContext } from './combatAudio';
+
+export {
+  getCombatSoundEnabled,
+  installGlobalAudioUnlockOnce,
+  playConsumeItemSound,
+  playPvpEffectSound,
+  playPvpEmoteSound,
+  playRoomTowerSound,
+  playShopCoinSound,
+  playTechniqueCombatSound,
+  setCombatSoundEnabled,
+  speakVictoryVoice,
+  stopAllCombatAudio,
+  stopCombatVoice,
+  subscribeCombatSound,
+  unlockCombatAudio,
+  unlockPvpAudio,
+  unlockRestAudio,
+} from './combatAudio';
+export type {
+  CombatSoundActor,
+  CombatSoundKind,
+  CombatSoundPayload,
+  RoomTowerSoundKind,
+  SpeakVictoryVoiceOptions,
+  TechniqueSlot,
+} from './combatAudio';
 
 export const DB_KEY = 'animefit_device_v3';
 export const LOGGED_OUT_KEY = 'animefit_logged_out_v3';
@@ -617,6 +667,118 @@ export function mergeRichUserProfiles(
     localHadExtraData = true;
   }
 
+  const localUnlocked = getUnlockedCharacterIds(localUser);
+  const serverUnlocked = getUnlockedCharacterIds(serverUser);
+  const mergedUnlocked = Array.from(new Set([...serverUnlocked, ...localUnlocked]));
+  if (mergedUnlocked.length > serverUnlocked.length) localHadExtraData = true;
+
+  const mergedOffsets: Record<string, number> = {
+    ...(serverUser.charXpOffsets || {}),
+  };
+  for (const [cid, off] of Object.entries(localUser.charXpOffsets || {})) {
+    if (typeof off === 'number' && Number.isFinite(off)) {
+      if (mergedOffsets[cid] === undefined) {
+        mergedOffsets[cid] = off;
+        localHadExtraData = true;
+      } else {
+        mergedOffsets[cid] = Math.min(mergedOffsets[cid], off);
+      }
+    }
+  }
+
+  const localDailyShop = localUser.shopDailyPurchases;
+  const serverDailyShop = serverUser.shopDailyPurchases;
+  let mergedShopDaily = serverDailyShop || localDailyShop;
+  if (localDailyShop && serverDailyShop) {
+    if (localDailyShop.dateKey > serverDailyShop.dateKey) {
+      mergedShopDaily = localDailyShop;
+      localHadExtraData = true;
+    } else if (
+      localDailyShop.dateKey === serverDailyShop.dateKey &&
+      localDailyShop.itemsBought > serverDailyShop.itemsBought
+    ) {
+      mergedShopDaily = localDailyShop;
+      localHadExtraData = true;
+    }
+  } else if (localDailyShop && !serverDailyShop) {
+    mergedShopDaily = localDailyShop;
+    localHadExtraData = true;
+  }
+
+  const localPvpDaily = localUser.pvpDailyXp;
+  const serverPvpDaily = serverUser.pvpDailyXp;
+  let mergedPvpDaily = serverPvpDaily || localPvpDaily;
+  if (localPvpDaily && serverPvpDaily) {
+    if (localPvpDaily.dateKey > serverPvpDaily.dateKey) {
+      mergedPvpDaily = localPvpDaily;
+      localHadExtraData = true;
+    } else if (localPvpDaily.dateKey === serverPvpDaily.dateKey) {
+      mergedPvpDaily = {
+        dateKey: localPvpDaily.dateKey,
+        xpEarned: Math.max(localPvpDaily.xpEarned || 0, serverPvpDaily.xpEarned || 0),
+        coinsEarned: Math.max(
+          localPvpDaily.coinsEarned || 0,
+          serverPvpDaily.coinsEarned || 0
+        ),
+      };
+    }
+  } else if (localPvpDaily && !serverPvpDaily) {
+    mergedPvpDaily = localPvpDaily;
+    localHadExtraData = true;
+  }
+
+  const localSurvDaily = localUser.survivalDailyCoins;
+  const serverSurvDaily = serverUser.survivalDailyCoins;
+  let mergedSurvDaily = serverSurvDaily || localSurvDaily;
+  if (localSurvDaily && serverSurvDaily) {
+    if (localSurvDaily.dateKey > serverSurvDaily.dateKey) {
+      mergedSurvDaily = localSurvDaily;
+      localHadExtraData = true;
+    } else if (localSurvDaily.dateKey === serverSurvDaily.dateKey) {
+      mergedSurvDaily = {
+        dateKey: localSurvDaily.dateKey,
+        coinsEarned: Math.max(
+          localSurvDaily.coinsEarned || 0,
+          serverSurvDaily.coinsEarned || 0
+        ),
+      };
+    }
+  } else if (localSurvDaily && !serverSurvDaily) {
+    mergedSurvDaily = localSurvDaily;
+    localHadExtraData = true;
+  }
+
+  const localInv = Array.isArray(localUser.inventory) ? localUser.inventory : [];
+  const serverInv = Array.isArray(serverUser.inventory) ? serverUser.inventory : [];
+  const localInvCount = localInv.reduce((sum, e) => sum + (e?.quantity || 0), 0);
+  const serverInvCount = serverInv.reduce((sum, e) => sum + (e?.quantity || 0), 0);
+  const localSpentAhead =
+    mergedUnlocked.length > serverUnlocked.length ||
+    (mergedShopDaily === localDailyShop &&
+      (localDailyShop?.itemsBought || 0) > (serverDailyShop?.itemsBought || 0)) ||
+    localInvCount !== serverInvCount;
+
+  const mergedCoins = localSpentAhead
+    ? Math.max(0, Number(localUser.coins ?? serverUser.coins ?? 0))
+    : Math.max(
+        Math.max(0, Number(serverUser.coins || 0)),
+        Math.max(0, Number(localUser.coins || 0))
+      );
+  if (
+    typeof localUser.coins === 'number' &&
+    localUser.coins !== serverUser.coins
+  ) {
+    localHadExtraData = true;
+  }
+
+  const mergedInventory =
+    localInv.length > 0 && (localSpentAhead || localInvCount >= serverInvCount)
+      ? localInv
+      : serverInv;
+  if (localInvCount > serverInvCount) localHadExtraData = true;
+
+  const mergedEquippedCosmetics = localUser.equippedCosmetics || serverUser.equippedCosmetics;
+
   const localEmail = (localUser.email || '').trim();
   const serverEmail = (serverUser.email || '').trim();
   const mergedEmail =
@@ -624,14 +786,108 @@ export function mergeRichUserProfiles(
       ? localEmail
       : serverEmail || localEmail;
 
+  const localOwnedAcc = getOwnedAccessoryIds(localUser);
+  const serverOwnedAcc = getOwnedAccessoryIds(serverUser);
+  const mergedOwnedAcc = Array.from(new Set([...serverOwnedAcc, ...localOwnedAcc]));
+  if (mergedOwnedAcc.length > serverOwnedAcc.length) localHadExtraData = true;
+
+  const localDailyAcc = localUser.accessoryShopDailyPurchases;
+  const serverDailyAcc = serverUser.accessoryShopDailyPurchases;
+  let mergedAccDaily = serverDailyAcc || localDailyAcc;
+  if (localDailyAcc && serverDailyAcc) {
+    if (localDailyAcc.dateKey > serverDailyAcc.dateKey) {
+      mergedAccDaily = localDailyAcc;
+      localHadExtraData = true;
+    } else if (
+      localDailyAcc.dateKey === serverDailyAcc.dateKey &&
+      localDailyAcc.itemsBought > serverDailyAcc.itemsBought
+    ) {
+      mergedAccDaily = localDailyAcc;
+      localHadExtraData = true;
+    }
+  } else if (localDailyAcc && !serverDailyAcc) {
+    mergedAccDaily = localDailyAcc;
+    localHadExtraData = true;
+  }
+
+  const localAccSpentAhead =
+    mergedOwnedAcc.length > serverOwnedAcc.length ||
+    (mergedAccDaily === localDailyAcc &&
+      (localDailyAcc?.itemsBought || 0) > (serverDailyAcc?.itemsBought || 0));
+
+  const mergedSecondaryCoins = localAccSpentAhead
+    ? Math.max(0, Math.floor(Number(localUser.secondaryCoins ?? serverUser.secondaryCoins ?? 0)))
+    : Math.max(
+        Math.max(0, Math.floor(Number(serverUser.secondaryCoins || 0))),
+        Math.max(0, Math.floor(Number(localUser.secondaryCoins || 0)))
+      );
+  if (
+    typeof localUser.secondaryCoins === 'number' &&
+    localUser.secondaryCoins !== serverUser.secondaryCoins
+  ) {
+    localHadExtraData = true;
+  }
+
+  const mergedEquippedAccessories =
+    localUser.equippedAccessories || serverUser.equippedAccessories;
+
+  const mergedRoomMilestones = Array.from(
+    new Set([
+      ...(Array.isArray(serverUser.roomBossMilestonesDefeated)
+        ? serverUser.roomBossMilestonesDefeated
+        : []),
+      ...(Array.isArray(localUser.roomBossMilestonesDefeated)
+        ? localUser.roomBossMilestonesDefeated
+        : []),
+    ])
+  )
+    .map((n) => Math.floor(Number(n)))
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .sort((a, b) => a - b);
+
+  if (
+    mergedRoomMilestones.length >
+    (Array.isArray(serverUser.roomBossMilestonesDefeated)
+      ? serverUser.roomBossMilestonesDefeated.length
+      : 0)
+  ) {
+    localHadExtraData = true;
+  }
+
+  const mergedRoomBestFloor = Math.max(
+    Math.floor(Number(serverUser.roomBestFloor || 0)),
+    Math.floor(Number(localUser.roomBestFloor || 0))
+  );
+  if (mergedRoomBestFloor > Math.floor(Number(serverUser.roomBestFloor || 0))) {
+    localHadExtraData = true;
+  }
+
   const merged: UserProfile = {
     ...serverUser,
     email: mergedEmail,
     charId: localUser.charId || serverUser.charId || 'goku',
     xp: Math.max(serverXp, localXp),
+    coins: mergedCoins,
+    secondaryCoins: mergedSecondaryCoins,
+    unlockedChars: mergedUnlocked,
+    charXpOffsets: mergedOffsets,
+    inventory: mergedInventory,
+    equippedCosmetics: mergedEquippedCosmetics,
+    ownedAccessories: mergedOwnedAcc,
+    equippedAccessories: mergedEquippedAccessories,
+    shopDailyPurchases: mergedShopDaily,
+    accessoryShopDailyPurchases: mergedAccDaily,
+    pvpDailyXp: mergedPvpDaily,
+    survivalDailyCoins: mergedSurvDaily,
     workoutsDone: Math.max(serverWorkouts, localWorkouts),
     pvpWins: Math.max(serverUser.pvpWins || 0, localUser.pvpWins || 0),
     pvpLosses: Math.max(serverUser.pvpLosses || 0, localUser.pvpLosses || 0),
+    survivalBestWave: Math.max(
+      serverUser.survivalBestWave || 0,
+      localUser.survivalBestWave || 0
+    ),
+    roomBestFloor: mergedRoomBestFloor,
+    roomBossMilestonesDefeated: mergedRoomMilestones,
     prs: prsResult.merged,
     oneRmRecords: oneRmResult.merged,
     history: mergedHistory,
@@ -1059,14 +1315,17 @@ export function getCharacterStage(charId: string, level: number): {
   char: CharacterDef;
   stageName: string;
   stageLevel: number;
+  stageIndex: number;
   nextStage: EvolutionStage | null;
 } {
   const char = getCharacterById(charId);
   let current = char.stages[0];
+  let currentIdx = 0;
   let next: EvolutionStage | null = null;
   for (let i = 0; i < char.stages.length; i++) {
     if (level >= char.stages[i].levelReq) {
       current = char.stages[i];
+      currentIdx = i;
       next = char.stages[i + 1] || null;
     }
   }
@@ -1074,7 +1333,31 @@ export function getCharacterStage(charId: string, level: number): {
     char,
     stageName: current.phase,
     stageLevel: current.levelReq,
+    stageIndex: currentIdx,
     nextStage: next,
+  };
+}
+
+export function getActiveCharacterStage(
+  user: Pick<UserProfile, 'charId' | 'xp' | 'charXpOffsets'>,
+  overrideCharId?: string
+): {
+  char: CharacterDef;
+  stageName: string;
+  stageLevel: number;
+  stageIndex: number;
+  nextStage: EvolutionStage | null;
+  effectiveLevel: number;
+  effectiveXpInfo: ReturnType<typeof getLevelInfo>;
+} {
+  const targetCharId = overrideCharId || user.charId || 'goku';
+  const effectiveXp = getCharacterEffectiveXp(user, targetCharId);
+  const effectiveXpInfo = getLevelInfo(effectiveXp);
+  const stage = getCharacterStage(targetCharId, effectiveXpInfo.level);
+  return {
+    ...stage,
+    effectiveLevel: effectiveXpInfo.level,
+    effectiveXpInfo,
   };
 }
 
@@ -1156,13 +1439,96 @@ export function getExerciseById(
   return getAllExercisesForUser(user).find((e) => e.id === id);
 }
 
-export function getLastStatsForExercise(
+export function normalizeExerciseKey(raw: string): string {
+  return String(raw || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function getExerciseNameByAnyId(
   user: UserProfile,
-  exId: string
-): { weight: number | ''; reps: number | '' } | null {
+  exId: string,
+  exNameHint?: string
+): string {
+  if (exNameHint && exNameHint.trim()) return exNameHint.trim();
+  const def = getExerciseById(exId, user);
+  if (def?.name) return def.name;
   const hist = user.history || [];
   for (let i = hist.length - 1; i >= 0; i--) {
-    const found = hist[i].exercises.find((e) => e.exId === exId);
+    const found = hist[i].exercises?.find((e) => e.exId === exId && e.exName);
+    if (found?.exName) return found.exName;
+  }
+  return '';
+}
+
+export function getMatchingExerciseIds(
+  user: UserProfile,
+  exId: string,
+  exNameHint?: string
+): { ids: Set<string>; normName: string; displayName: string } {
+  const displayName = getExerciseNameByAnyId(user, exId, exNameHint);
+  const normName = normalizeExerciseKey(displayName);
+  const ids = new Set<string>();
+  if (exId) ids.add(exId);
+
+  if (normName) {
+    for (const def of getAllExercisesForUser(user)) {
+      if (normalizeExerciseKey(def.name) === normName) {
+        ids.add(def.id);
+      }
+    }
+    for (const r of user.routines || []) {
+      for (const re of r.exercises || []) {
+        const reDef = getExerciseById(re.exId, user);
+        if (reDef && normalizeExerciseKey(reDef.name) === normName) {
+          ids.add(re.exId);
+        }
+      }
+    }
+    for (const entry of user.history || []) {
+      for (const ex of entry.exercises || []) {
+        const name = ex.exName || getExerciseById(ex.exId, user)?.name || '';
+        if (name && normalizeExerciseKey(name) === normName) {
+          ids.add(ex.exId);
+        }
+      }
+    }
+  }
+
+  return { ids, normName, displayName };
+}
+
+function computeSetPrScore(
+  weight: number | '',
+  reps: number | '',
+  isCardio: boolean,
+  isBodyweight: boolean
+): number {
+  const w = Number(weight) || 0;
+  const r = Number(reps) || 0;
+  if (isCardio) return w;
+  if (isBodyweight && w === 0) return r;
+  return w;
+}
+
+export function getLastStatsForExercise(
+  user: UserProfile,
+  exId: string,
+  exNameHint?: string
+): { weight: number | ''; reps: number | '' } | null {
+  const { ids, normName } = getMatchingExerciseIds(user, exId, exNameHint);
+  const hist = user.history || [];
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const found = hist[i].exercises.find((e) => {
+      if (ids.has(e.exId)) return true;
+      if (!normName) return false;
+      const n = e.exName || getExerciseById(e.exId, user)?.name || '';
+      return n ? normalizeExerciseKey(n) === normName : false;
+    });
     if (found && found.sets.length > 0) {
       const doneSet = found.sets.find((s) => s.done) || found.sets[0];
       return { weight: doneSet.weight, reps: doneSet.reps };
@@ -1180,12 +1546,19 @@ export interface PreviousExerciseHistory {
 
 export function getLastExerciseSetsHistory(
   user: UserProfile,
-  exId: string
+  exId: string,
+  exNameHint?: string
 ): PreviousExerciseHistory | null {
+  const { ids, normName } = getMatchingExerciseIds(user, exId, exNameHint);
   const hist = user.history || [];
   for (let i = hist.length - 1; i >= 0; i--) {
     const entry = hist[i];
-    const found = entry.exercises.find((e) => e.exId === exId);
+    const found = entry.exercises.find((e) => {
+      if (ids.has(e.exId)) return true;
+      if (!normName) return false;
+      const n = e.exName || getExerciseById(e.exId, user)?.name || '';
+      return n ? normalizeExerciseKey(n) === normName : false;
+    });
     if (found && found.sets.length > 0) {
       const doneSets = found.sets.filter((s) => s.done);
       const source = doneSets.length > 0 ? doneSets : found.sets;
@@ -1228,17 +1601,109 @@ export function calculateEstimated1RM(weight: number, reps: number): number {
   return Math.round(estimated * 10) / 10;
 }
 
+export function getGlobalExerciseBaseline(
+  user: UserProfile,
+  exId: string,
+  options?: {
+    exName?: string;
+    isCardio?: boolean;
+    isBodyweight?: boolean;
+  }
+): {
+  bestPr: number;
+  bestOneRm: number;
+  hasPriorRecord: boolean;
+} {
+  const def = getExerciseById(exId, user);
+  const isCardio = options?.isCardio ?? Boolean(def?.isCardio);
+  const isBodyweight = options?.isBodyweight ?? Boolean(def?.isBodyweight);
+  const { ids, normName } = getMatchingExerciseIds(
+    user,
+    exId,
+    options?.exName || def?.name
+  );
+
+  let bestPr = 0;
+  let bestOneRm = 0;
+  let hasPriorRecord = false;
+
+  for (const id of ids) {
+    const prVal = Number(user.prs?.[id] || 0);
+    if (Number.isFinite(prVal) && prVal > 0) {
+      hasPriorRecord = true;
+      if (prVal > bestPr) bestPr = prVal;
+    }
+    if (!isCardio) {
+      const rmVal = Number(user.oneRmRecords?.[id] || 0);
+      if (Number.isFinite(rmVal) && rmVal > 0) {
+        hasPriorRecord = true;
+        const rounded = Math.round(rmVal * 10) / 10;
+        if (rounded > bestOneRm) bestOneRm = rounded;
+      }
+    }
+  }
+
+  for (const entry of user.history || []) {
+    for (const ex of entry.exercises || []) {
+      const exDef = getExerciseById(ex.exId, user);
+      const entryName = ex.exName || exDef?.name || '';
+      const matches =
+        ids.has(ex.exId) ||
+        (Boolean(normName) &&
+          Boolean(entryName) &&
+          normalizeExerciseKey(entryName) === normName);
+      if (!matches) continue;
+
+      const doneSets = (ex.sets || []).filter((s) => s.done);
+      if (doneSets.length > 0) {
+        hasPriorRecord = true;
+      }
+      for (const s of doneSets) {
+        const score = computeSetPrScore(
+          s.weight,
+          s.reps,
+          isCardio || Boolean(exDef?.isCardio),
+          isBodyweight || Boolean(exDef?.isBodyweight)
+        );
+        if (score > bestPr) bestPr = score;
+        if (!isCardio && !exDef?.isCardio) {
+          const est = calculateEstimated1RM(
+            Number(s.weight) || 0,
+            Number(s.reps) || 0
+          );
+          if (est > bestOneRm) bestOneRm = est;
+        }
+      }
+    }
+  }
+
+  return {
+    bestPr,
+    bestOneRm,
+    hasPriorRecord,
+  };
+}
+
 export function getBestOneRmFromHistory(
   user: UserProfile,
   exId: string,
-  isCardio = false
+  isCardio = false,
+  exNameHint?: string
 ): number {
   if (isCardio) return 0;
+  const { ids, normName } = getMatchingExerciseIds(user, exId, exNameHint);
   let best = 0;
   const hist = user.history || [];
   for (const entry of hist) {
     for (const ex of entry.exercises || []) {
-      if (ex.exId !== exId) continue;
+      const exDef = getExerciseById(ex.exId, user);
+      const entryName = ex.exName || exDef?.name || '';
+      const matches =
+        ids.has(ex.exId) ||
+        (Boolean(normName) &&
+          Boolean(entryName) &&
+          normalizeExerciseKey(entryName) === normName);
+      if (!matches) continue;
       for (const s of ex.sets || []) {
         if (!s.done) continue;
         const est = calculateEstimated1RM(
@@ -1255,13 +1720,19 @@ export function getBestOneRmFromHistory(
 export function getBestOneRmForExercise(
   user: UserProfile,
   exId: string,
-  isCardio = false
+  isCardio = false,
+  exNameHint?: string
 ): number {
   if (isCardio) return 0;
-  const stored = Number(user.oneRmRecords?.[exId] || 0);
-  const fromHistory = getBestOneRmFromHistory(user, exId, isCardio);
+  const { ids } = getMatchingExerciseIds(user, exId, exNameHint);
+  let stored = 0;
+  for (const id of ids) {
+    const val = Number(user.oneRmRecords?.[id] || 0);
+    if (Number.isFinite(val) && val > stored) stored = val;
+  }
+  const fromHistory = getBestOneRmFromHistory(user, exId, isCardio, exNameHint);
   return Math.max(
-    Number.isFinite(stored) && stored > 0 ? Math.round(stored * 10) / 10 : 0,
+    stored > 0 ? Math.round(stored * 10) / 10 : 0,
     fromHistory
   );
 }
@@ -1295,6 +1766,55 @@ export function getAllOneRmRecordEntries(
   return out;
 }
 
+export interface GlobalRecordDisplayEntry {
+  key: string;
+  exId: string;
+  name: string;
+  pr: number;
+  oneRm: number;
+  isCardio: boolean;
+  isBodyweight: boolean;
+}
+
+export function getGlobalDisplayRecords(
+  user: UserProfile
+): GlobalRecordDisplayEntry[] {
+  const oneRmMap = getAllOneRmRecordEntries(user);
+  const allIds = Array.from(
+    new Set([...Object.keys(user.prs || {}), ...Object.keys(oneRmMap)])
+  );
+  const byNormKey = new Map<string, GlobalRecordDisplayEntry>();
+
+  for (const exId of allIds) {
+    const ex = getExerciseById(exId, user);
+    const fallbackName =
+      ex?.name || getExerciseNameByAnyId(user, exId) || '';
+    if (!fallbackName) continue;
+    const normKey = normalizeExerciseKey(fallbackName) || exId;
+    const prVal = Number(user.prs?.[exId] || 0);
+    const oneRmVal = ex?.isCardio ? 0 : Number(oneRmMap[exId] || 0);
+    if (prVal <= 0 && oneRmVal <= 0) continue;
+
+    const existing = byNormKey.get(normKey);
+    if (!existing) {
+      byNormKey.set(normKey, {
+        key: normKey,
+        exId,
+        name: fallbackName,
+        pr: prVal,
+        oneRm: oneRmVal,
+        isCardio: Boolean(ex?.isCardio),
+        isBodyweight: Boolean(ex?.isBodyweight),
+      });
+    } else {
+      existing.pr = Math.max(existing.pr, prVal);
+      existing.oneRm = Math.max(existing.oneRm, oneRmVal);
+    }
+  }
+
+  return Array.from(byNormKey.values());
+}
+
 export function formatDuration(ms: number): string {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(totalSec / 3600);
@@ -1303,34 +1823,6 @@ export function formatDuration(ms: number): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
-
-let sharedPvpAudioCtx: AudioContext | null = null;
-
-function getPvpAudioContext(): AudioContext | null {
-  if (typeof window === 'undefined') return null;
-  const AudioCtx =
-    window.AudioContext ||
-    (window as unknown as { webkitAudioContext: typeof AudioContext })
-      .webkitAudioContext;
-  if (!AudioCtx) return null;
-  if (!sharedPvpAudioCtx) {
-    sharedPvpAudioCtx = new AudioCtx();
-  }
-  return sharedPvpAudioCtx;
-}
-
-export function unlockPvpAudio(): void {
-  try {
-    const ctx = getPvpAudioContext();
-    if (ctx && ctx.state === 'suspended') {
-      void ctx.resume();
-    }
-  } catch {
-    // ignore mobile WebAudio restrictions cleanly
-  }
-}
-
-export const unlockRestAudio = unlockPvpAudio;
 
 function playAnimeRestSequence(ctx: AudioContext): void {
   const now = ctx.currentTime;
@@ -1373,7 +1865,7 @@ function playAnimeRestSequence(ctx: AudioContext): void {
 
 export function beepRestDone(): void {
   try {
-    const ctx = getPvpAudioContext();
+    const ctx = getCombatAudioContext();
     if (!ctx) return;
     if (ctx.state === 'suspended') {
       void ctx
@@ -1392,104 +1884,31 @@ export function beepRestDone(): void {
   }
 }
 
-export function playPvpEffectSound(
-  kind: 'special' | 'ultimate' | 'hit' | 'crit' | 'guard'
-): void {
+export function playStreakCelebrationSound(): void {
   try {
-    const ctx = getPvpAudioContext();
+    const ctx = getCombatAudioContext();
     if (!ctx) return;
     if (ctx.state === 'suspended') {
       void ctx.resume();
     }
     const now = ctx.currentTime;
-
-    if (kind === 'ultimate') {
+    const notes = [
+      { freq: 587.33, start: 0, dur: 0.12, peak: 0.055 },
+      { freq: 783.99, start: 0.09, dur: 0.14, peak: 0.065 },
+      { freq: 1174.66, start: 0.18, dur: 0.24, peak: 0.07 },
+    ];
+    for (const n of notes) {
       const osc = ctx.createOscillator();
-      const chime = ctx.createOscillator();
       const gain = ctx.createGain();
-      const chimeGain = ctx.createGain();
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(175, now);
-      osc.frequency.exponentialRampToValueAtTime(560, now + 0.17);
-      osc.frequency.exponentialRampToValueAtTime(310, now + 0.36);
-      gain.gain.setValueAtTime(0.065, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.37);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(now);
-      osc.stop(now + 0.38);
-
-      chime.type = 'triangle';
-      chime.frequency.setValueAtTime(840, now + 0.12);
-      chime.frequency.exponentialRampToValueAtTime(620, now + 0.34);
-      chimeGain.gain.setValueAtTime(0.001, now);
-      chimeGain.gain.setValueAtTime(0.055, now + 0.12);
-      chimeGain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
-      chime.connect(chimeGain);
-      chimeGain.connect(ctx.destination);
-      chime.start(now + 0.12);
-      chime.stop(now + 0.36);
-    } else if (kind === 'special') {
-      const osc = ctx.createOscillator();
-      const harmonic = ctx.createOscillator();
-      const gain = ctx.createGain();
-      const hGain = ctx.createGain();
       osc.type = 'triangle';
-      osc.frequency.setValueAtTime(340, now);
-      osc.frequency.exponentialRampToValueAtTime(780, now + 0.15);
-      gain.gain.setValueAtTime(0.07, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.21);
+      osc.frequency.setValueAtTime(n.freq, now + n.start);
+      gain.gain.setValueAtTime(0.001, now + n.start);
+      gain.gain.linearRampToValueAtTime(n.peak, now + n.start + 0.018);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + n.start + n.dur);
       osc.connect(gain);
       gain.connect(ctx.destination);
-      osc.start(now);
-      osc.stop(now + 0.22);
-
-      harmonic.type = 'sine';
-      harmonic.frequency.setValueAtTime(510, now + 0.04);
-      harmonic.frequency.exponentialRampToValueAtTime(980, now + 0.18);
-      hGain.gain.setValueAtTime(0.04, now + 0.04);
-      hGain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
-      harmonic.connect(hGain);
-      hGain.connect(ctx.destination);
-      harmonic.start(now + 0.04);
-      harmonic.stop(now + 0.23);
-    } else if (kind === 'crit') {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(240, now);
-      osc.frequency.exponentialRampToValueAtTime(920, now + 0.05);
-      osc.frequency.exponentialRampToValueAtTime(140, now + 0.14);
-      gain.gain.setValueAtTime(0.06, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(now);
-      osc.stop(now + 0.16);
-    } else if (kind === 'guard') {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(420, now);
-      osc.frequency.exponentialRampToValueAtTime(540, now + 0.11);
-      gain.gain.setValueAtTime(0.05, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(now);
-      osc.stop(now + 0.14);
-    } else {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(180, now);
-      osc.frequency.exponentialRampToValueAtTime(90, now + 0.09);
-      gain.gain.setValueAtTime(0.048, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(now);
-      osc.stop(now + 0.11);
+      osc.start(now + n.start);
+      osc.stop(now + n.start + n.dur + 0.02);
     }
   } catch {
     // ignore mobile WebAudio restrictions cleanly
@@ -2033,3 +2452,828 @@ export function formatDailyCountdown(ms: number): string {
 
 export const getStoryWeeklyStatus = getStoryDailyStatus;
 export const formatWeeklyCountdown = formatDailyCountdown;
+
+// =========================================================================
+// Daily Streak Engine (Local Device Calendar Date — NO UTC, Sunday Paused)
+// =========================================================================
+
+export function toLocalDateKey(input: Date | string | number): string | null {
+  if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      return trimmed;
+    }
+  }
+  const dt = input instanceof Date ? input : new Date(input);
+  const ms = dt.getTime();
+  if (!Number.isFinite(ms)) return null;
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const d = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function parseLocalNoon(key: string): Date {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0, 0);
+}
+
+function addLocalCalendarDays(dt: Date, delta: number): Date {
+  const copy = new Date(dt.getTime());
+  copy.setDate(copy.getDate() + delta);
+  return copy;
+}
+
+/**
+ * Checks calendar days strictly between `earlierKey` and `laterKey`.
+ * - Missing any Monday..Saturday (dayOfWeek !== 0) breaks the streak -> returns true.
+ * - Gaps made purely of Sunday (dayOfWeek === 0) preserve the streak -> returns false.
+ */
+export function didMissNonSundayWeekdayBetween(
+  earlierKey: string,
+  laterKey: string
+): boolean {
+  if (earlierKey >= laterKey) return false;
+  let cursor = addLocalCalendarDays(parseLocalNoon(earlierKey), 1);
+  let guard = 0;
+  while (guard < 4000) {
+    guard++;
+    const key = toLocalDateKey(cursor);
+    if (!key || key >= laterKey) break;
+    if (cursor.getDay() !== 0) {
+      return true;
+    }
+    cursor = addLocalCalendarDays(cursor, 1);
+  }
+  return false;
+}
+
+function hasSundayStrictlyBetweenOrToday(
+  earlierKey: string,
+  laterKey: string
+): boolean {
+  if (earlierKey >= laterKey) return false;
+  let cursor = addLocalCalendarDays(parseLocalNoon(earlierKey), 1);
+  let guard = 0;
+  while (guard < 4000) {
+    guard++;
+    const key = toLocalDateKey(cursor);
+    if (!key || key > laterKey) break;
+    if (cursor.getDay() === 0) {
+      return true;
+    }
+    cursor = addLocalCalendarDays(cursor, 1);
+  }
+  return false;
+}
+
+export interface DailyStreakSummary {
+  currentStreak: number;
+  bestStreak: number;
+  trainedToday: boolean;
+  pausedOnSunday: boolean;
+  lastWorkoutLocalDate: string | null;
+}
+
+export function computeDailyStreakSummary(
+  userOrParams:
+    | UserProfile
+    | {
+        historyDates?: string[];
+        dailyStreakCount?: number;
+        dailyStreakBest?: number;
+        dailyStreakLastDate?: string | null;
+      },
+  now: Date = new Date()
+): DailyStreakSummary {
+  const historyDates =
+    'history' in userOrParams
+      ? (userOrParams.history || []).map((h) => h.date)
+      : userOrParams.historyDates || [];
+  const storedCount = Math.max(0, Number(userOrParams.dailyStreakCount || 0) || 0);
+  const storedBest = Math.max(0, Number(userOrParams.dailyStreakBest || 0) || 0);
+  const storedLast = userOrParams.dailyStreakLastDate || null;
+
+  const uniqueSet = new Set<string>();
+  for (const raw of historyDates) {
+    const k = toLocalDateKey(raw);
+    if (k) uniqueSet.add(k);
+  }
+  if (storedLast) {
+    const k = toLocalDateKey(storedLast);
+    if (k) uniqueSet.add(k);
+  }
+
+  const dayKeys = Array.from(uniqueSet).sort((a, b) => (a > b ? -1 : 1));
+  const todayKey = toLocalDateKey(now) || '';
+
+  if (dayKeys.length === 0) {
+    return {
+      currentStreak: 0,
+      bestStreak: storedBest,
+      trainedToday: false,
+      pausedOnSunday: false,
+      lastWorkoutLocalDate: null,
+    };
+  }
+
+  // Compute run lengths across all recorded local workout days
+  let runFromLatest = 1;
+  for (let i = 1; i < dayKeys.length; i++) {
+    if (!didMissNonSundayWeekdayBetween(dayKeys[i], dayKeys[i - 1])) {
+      runFromLatest++;
+    } else {
+      break;
+    }
+  }
+
+  // If history array was capped (e.g. latest 40-60 entries) and every entry connects,
+  // honor persisted storedCount if it belongs to the same latest workout day.
+  if (
+    runFromLatest === dayKeys.length &&
+    storedCount > runFromLatest &&
+    storedLast === dayKeys[0]
+  ) {
+    runFromLatest = storedCount;
+  }
+
+  // Also compute historical max run for bestStreak
+  let maxHistoricalRun = runFromLatest;
+  let curRun = 1;
+  for (let i = 1; i < dayKeys.length; i++) {
+    if (!didMissNonSundayWeekdayBetween(dayKeys[i], dayKeys[i - 1])) {
+      curRun++;
+      if (curRun > maxHistoricalRun) maxHistoricalRun = curRun;
+    } else {
+      curRun = 1;
+    }
+  }
+
+  const latestKey = dayKeys[0];
+  const trainedToday = latestKey >= todayKey;
+  const brokenBeforeToday =
+    !trainedToday && didMissNonSundayWeekdayBetween(latestKey, todayKey);
+
+  const currentStreak = brokenBeforeToday ? 0 : runFromLatest;
+  const pausedOnSunday =
+    !brokenBeforeToday &&
+    !trainedToday &&
+    hasSundayStrictlyBetweenOrToday(latestKey, todayKey);
+
+  return {
+    currentStreak,
+    bestStreak: Math.max(storedBest, maxHistoricalRun, currentStreak),
+    trainedToday,
+    pausedOnSunday,
+    lastWorkoutLocalDate: latestKey,
+  };
+}
+
+export function computeNextDailyStreakOnWorkout(
+  user: UserProfile,
+  now: Date = new Date()
+): {
+  prevStreak: number;
+  nextStreak: number;
+  bestStreak: number;
+  localDateKey: string;
+  pausedSundayToday: boolean;
+} {
+  const summary = computeDailyStreakSummary(user, now);
+  const todayKey = toLocalDateKey(now) || '';
+  const prevStreak = summary.currentStreak;
+
+  if (summary.trainedToday) {
+    const nextStreak = Math.max(1, prevStreak);
+    return {
+      prevStreak,
+      nextStreak,
+      bestStreak: Math.max(summary.bestStreak, nextStreak),
+      localDateKey: todayKey,
+      pausedSundayToday: false,
+    };
+  }
+
+  if (prevStreak > 0) {
+    const nextStreak = prevStreak + 1;
+    return {
+      prevStreak,
+      nextStreak,
+      bestStreak: Math.max(summary.bestStreak, nextStreak),
+      localDateKey: todayKey,
+      pausedSundayToday: summary.pausedOnSunday,
+    };
+  }
+
+  return {
+    prevStreak: 0,
+    nextStreak: 1,
+    bestStreak: Math.max(summary.bestStreak, 1),
+    localDateKey: todayKey,
+    pausedSundayToday: false,
+  };
+}
+
+export function playEvolutionSound(evolved: boolean): void {
+  try {
+    const ctx = getCombatAudioContext();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') {
+      void ctx.resume();
+    }
+    const now = ctx.currentTime;
+
+    if (evolved) {
+      // Energetic power-up surge + ascending evolution chord
+      const surge = ctx.createOscillator();
+      const surgeGain = ctx.createGain();
+      surge.type = 'sawtooth';
+      surge.frequency.setValueAtTime(140, now);
+      surge.frequency.exponentialRampToValueAtTime(520, now + 0.45);
+      surgeGain.gain.setValueAtTime(0.001, now);
+      surgeGain.gain.linearRampToValueAtTime(0.045, now + 0.08);
+      surgeGain.gain.exponentialRampToValueAtTime(0.001, now + 0.48);
+      surge.connect(surgeGain);
+      surgeGain.connect(ctx.destination);
+      surge.start(now);
+      surge.stop(now + 0.5);
+
+      const notes = [
+        { freq: 523.25, start: 0.25, dur: 0.16, peak: 0.06 },
+        { freq: 659.25, start: 0.37, dur: 0.16, peak: 0.065 },
+        { freq: 783.99, start: 0.49, dur: 0.18, peak: 0.07 },
+        { freq: 1046.5, start: 0.62, dur: 0.36, peak: 0.08 },
+      ];
+      for (const n of notes) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(n.freq, now + n.start);
+        gain.gain.setValueAtTime(0.001, now + n.start);
+        gain.gain.linearRampToValueAtTime(n.peak, now + n.start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + n.start + n.dur);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + n.start);
+        osc.stop(now + n.start + n.dur + 0.02);
+      }
+    } else {
+      const notes = [
+        { freq: 587.33, start: 0, dur: 0.14, peak: 0.05 },
+        { freq: 880, start: 0.1, dur: 0.24, peak: 0.06 },
+      ];
+      for (const n of notes) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(n.freq, now + n.start);
+        gain.gain.setValueAtTime(0.001, now + n.start);
+        gain.gain.linearRampToValueAtTime(n.peak, now + n.start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + n.start + n.dur);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + n.start);
+        osc.stop(now + n.start + n.dur + 0.02);
+      }
+    }
+  } catch {
+    // ignore WebAudio restrictions
+  }
+}
+
+export function getSurvivalWaveXpReward(waveNumber: number): number {
+  const w = Math.max(1, Math.floor(waveNumber));
+  return Math.round(25 + w * 9 + Math.floor(w / 5) * 10);
+}
+
+export function computeSurvivalRecordXpReward(
+  clearedWave: number,
+  prevBestWave: number
+): {
+  xpEarned: number;
+  isNewRecord: boolean;
+  nextBestWave: number;
+} {
+  const wave = Math.max(1, Math.floor(clearedWave));
+  const best = Math.max(0, Math.floor(prevBestWave || 0));
+  if (wave <= best) {
+    return {
+      xpEarned: 0,
+      isNewRecord: false,
+      nextBestWave: best,
+    };
+  }
+  let xpEarned = 0;
+  for (let w = best + 1; w <= wave; w++) {
+    xpEarned += getSurvivalWaveXpReward(w);
+  }
+  return {
+    xpEarned,
+    isNewRecord: true,
+    nextBestWave: wave,
+  };
+}
+
+export function computeWorkoutCoinReward(
+  baseVolumeXp: number,
+  surpassedExerciseCount: number
+): number {
+  return Math.max(
+    12,
+    12 +
+      Math.min(24, Math.floor(Math.max(0, baseVolumeXp) / 8)) +
+      Math.min(12, Math.max(0, surpassedExerciseCount) * 4)
+  );
+}
+
+export function computeStoryCoinReward(chapterNumber: number): number {
+  const num = Math.max(1, Math.floor(chapterNumber));
+  return 24 + Math.min(26, Math.floor(num / 3));
+}
+
+export function computeSurvivalCoinReward(
+  user: Pick<UserProfile, 'survivalDailyCoins'>,
+  clearedWave: number,
+  isNewRecord: boolean,
+  dateKey: string = toShopLocalDateKey(new Date())
+): {
+  coinsEarned: number;
+  nextTracker: { dateKey: string; coinsEarned: number };
+} {
+  const prevTracker = user.survivalDailyCoins;
+  const usedToday =
+    prevTracker && prevTracker.dateKey === dateKey
+      ? Math.max(0, Number(prevTracker.coinsEarned || 0))
+      : 0;
+  const remainingCap = Math.max(0, DAILY_SURVIVAL_COIN_CAP - usedToday);
+  const rawCoins = isNewRecord
+    ? 10 + Math.min(20, clearedWave * 2)
+    : clearedWave >= 2
+    ? 3
+    : 1;
+  const coinsEarned = Math.min(remainingCap, rawCoins);
+  return {
+    coinsEarned,
+    nextTracker: {
+      dateKey,
+      coinsEarned: usedToday + coinsEarned,
+    },
+  };
+}
+
+export interface ShopTransactionResult {
+  ok: boolean;
+  error?: string;
+  user?: UserProfile;
+  balanceBefore: number;
+  balanceAfter: number;
+  deltaCoins: number;
+  xpAdded?: number;
+}
+
+export function buyShopItemTransaction(
+  user: UserProfile,
+  itemId: string,
+  dateKey: string = toShopLocalDateKey(new Date())
+): ShopTransactionResult {
+  const balanceBefore = Math.max(0, Math.floor(Number(user.coins || 0)));
+  const rotation = getDailyShopRotation(dateKey);
+  const item = rotation.items.find((i) => i.id === itemId);
+  if (!item) {
+    return {
+      ok: false,
+      error: 'Este objeto no está en la rotación diaria de hoy.',
+      balanceBefore,
+      balanceAfter: balanceBefore,
+      deltaCoins: 0,
+    };
+  }
+
+  const boughtToday = getUserDailyShopPurchasesCount(user, dateKey);
+  if (boughtToday >= DAILY_ITEM_PURCHASE_LIMIT) {
+    return {
+      ok: false,
+      error: `Alcanzaste el límite diario de compras (${DAILY_ITEM_PURCHASE_LIMIT}/${DAILY_ITEM_PURCHASE_LIMIT}). Vuelve mañana.`,
+      balanceBefore,
+      balanceAfter: balanceBefore,
+      deltaCoins: 0,
+    };
+  }
+
+  const currentInv = [...(user.inventory || [])];
+  const existingIdx = currentInv.findIndex((e) => e.itemId === item.id);
+  if (
+    isSingleOwnershipCosmetic(item.category) &&
+    existingIdx >= 0 &&
+    currentInv[existingIdx].quantity > 0
+  ) {
+    return {
+      ok: false,
+      error: 'Ya posees este artículo estético en tu inventario.',
+      balanceBefore,
+      balanceAfter: balanceBefore,
+      deltaCoins: 0,
+    };
+  }
+
+  if (balanceBefore < item.price) {
+    return {
+      ok: false,
+      error: `Necesitas ${item.price} monedas (tienes ${balanceBefore}).`,
+      balanceBefore,
+      balanceAfter: balanceBefore,
+      deltaCoins: 0,
+    };
+  }
+
+  if (existingIdx >= 0) {
+    currentInv[existingIdx] = {
+      ...currentInv[existingIdx],
+      quantity: currentInv[existingIdx].quantity + 1,
+      lastBuyPrice: item.price,
+    };
+  } else {
+    currentInv.push({
+      itemId: item.id,
+      quantity: 1,
+      lastBuyPrice: item.price,
+    });
+  }
+
+  const balanceAfter = balanceBefore - item.price;
+  const nextUser: UserProfile = {
+    ...user,
+    coins: balanceAfter,
+    inventory: currentInv,
+    shopDailyPurchases: {
+      dateKey,
+      itemsBought: boughtToday + 1,
+    },
+  };
+
+  return {
+    ok: true,
+    user: nextUser,
+    balanceBefore,
+    balanceAfter,
+    deltaCoins: -item.price,
+  };
+}
+
+export function buyShopCharacterTransaction(
+  user: UserProfile,
+  charId: string,
+  dateKey: string = toShopLocalDateKey(new Date())
+): ShopTransactionResult {
+  const balanceBefore = Math.max(0, Math.floor(Number(user.coins || 0)));
+  const rotation = getDailyShopRotation(dateKey);
+  const charDef = rotation.characters.find((c) => c.id === charId);
+  if (!charDef) {
+    return {
+      ok: false,
+      error: 'Este personaje no está en la rotación de tienda de hoy.',
+      balanceBefore,
+      balanceAfter: balanceBefore,
+      deltaCoins: 0,
+    };
+  }
+
+  const unlocked = getUnlockedCharacterIds(user);
+  if (unlocked.includes(charDef.id)) {
+    return {
+      ok: false,
+      error: `Ya tienes desbloqueado a ${charDef.name}.`,
+      balanceBefore,
+      balanceAfter: balanceBefore,
+      deltaCoins: 0,
+    };
+  }
+
+  const price = getCharacterShopPrice(charDef);
+  if (balanceBefore < price) {
+    return {
+      ok: false,
+      error: `Necesitas ${price} monedas para reclutar a ${charDef.name}.`,
+      balanceBefore,
+      balanceAfter: balanceBefore,
+      deltaCoins: 0,
+    };
+  }
+
+  const balanceAfter = balanceBefore - price;
+  const nextUser: UserProfile = {
+    ...user,
+    coins: balanceAfter,
+    unlockedChars: [...unlocked, charDef.id],
+    // Always unlock newly bought characters in Phase 1 so they evolve with user progress
+    charXpOffsets: {
+      ...(user.charXpOffsets || {}),
+      [charDef.id]: Math.max(0, Number(user.xp || 0)),
+    },
+  };
+
+  return {
+    ok: true,
+    user: nextUser,
+    balanceBefore,
+    balanceAfter,
+    deltaCoins: -price,
+  };
+}
+
+export function sellInventoryItemTransaction(
+  user: UserProfile,
+  itemId: string
+): ShopTransactionResult {
+  const balanceBefore = Math.max(0, Math.floor(Number(user.coins || 0)));
+  const currentInv = [...(user.inventory || [])];
+  const idx = currentInv.findIndex((e) => e.itemId === itemId && e.quantity > 0);
+  if (idx < 0) {
+    return {
+      ok: false,
+      error: 'No tienes unidades disponibles para vender.',
+      balanceBefore,
+      balanceAfter: balanceBefore,
+      deltaCoins: 0,
+    };
+  }
+
+  const def = getShopItemById(itemId);
+  const buyPrice = currentInv[idx].lastBuyPrice ?? def?.price ?? 0;
+  const refund = getResaleValue(buyPrice);
+
+  const nextQty = currentInv[idx].quantity - 1;
+  const nextInv =
+    nextQty > 0
+      ? currentInv.map((e, i) => (i === idx ? { ...e, quantity: nextQty } : e))
+      : currentInv.filter((_, i) => i !== idx);
+
+  // Unequip if no copies remain
+  const eq = { ...(user.equippedCosmetics || {}) };
+  if (nextQty <= 0) {
+    if (eq.auraId === itemId) eq.auraId = null;
+    if (eq.titleId === itemId) eq.titleId = null;
+    if (eq.emblemId === itemId) eq.emblemId = null;
+    if (eq.pvpIntroId === itemId) eq.pvpIntroId = null;
+    if (eq.pvpFinisherId === itemId) eq.pvpFinisherId = null;
+  }
+
+  const balanceAfter = balanceBefore + refund;
+  return {
+    ok: true,
+    user: {
+      ...user,
+      coins: balanceAfter,
+      inventory: nextInv,
+      equippedCosmetics: eq,
+    },
+    balanceBefore,
+    balanceAfter,
+    deltaCoins: refund,
+  };
+}
+
+export function consumeInventoryItemTransaction(
+  user: UserProfile,
+  itemId: string
+): ShopTransactionResult {
+  const balanceBefore = Math.max(0, Math.floor(Number(user.coins || 0)));
+  const currentInv = [...(user.inventory || [])];
+  const idx = currentInv.findIndex((e) => e.itemId === itemId && e.quantity > 0);
+  if (idx < 0) {
+    return {
+      ok: false,
+      error: 'No te quedan unidades de este objeto.',
+      balanceBefore,
+      balanceAfter: balanceBefore,
+      deltaCoins: 0,
+    };
+  }
+
+  const def = getShopItemById(itemId);
+  const nextQty = currentInv[idx].quantity - 1;
+  const nextInv =
+    nextQty > 0
+      ? currentInv.map((e, i) => (i === idx ? { ...e, quantity: nextQty } : e))
+      : currentInv.filter((_, i) => i !== idx);
+
+  let nextXp = Math.max(0, Number(user.xp || 0));
+  let xpAdded = 0;
+  if (def?.effectKind === 'xp' && (def.effectValue || 0) > 0) {
+    xpAdded = Math.round(def.effectValue || 0);
+    nextXp += xpAdded;
+  }
+
+  return {
+    ok: true,
+    user: {
+      ...user,
+      xp: nextXp,
+      inventory: nextInv,
+    },
+    balanceBefore,
+    balanceAfter: balanceBefore,
+    deltaCoins: 0,
+    xpAdded,
+  };
+}
+
+export function equipCosmeticTransaction(
+  user: UserProfile,
+  itemId: string
+): UserProfile {
+  const def = getShopItemById(itemId);
+  if (!def) return user;
+  const owned = (user.inventory || []).some(
+    (e) => e.itemId === itemId && e.quantity > 0
+  );
+  if (!owned) return user;
+
+  const eq = { ...(user.equippedCosmetics || {}) };
+  if (def.category === 'cosmetic_aura') {
+    eq.auraId = eq.auraId === itemId ? null : itemId;
+  } else if (def.category === 'cosmetic_title') {
+    eq.titleId = eq.titleId === itemId ? null : itemId;
+  } else if (def.category === 'cosmetic_emblem') {
+    eq.emblemId = eq.emblemId === itemId ? null : itemId;
+  } else if (def.category === 'pvp_intro') {
+    eq.pvpIntroId = eq.pvpIntroId === itemId ? null : itemId;
+  } else if (def.category === 'pvp_finisher') {
+    eq.pvpFinisherId = eq.pvpFinisherId === itemId ? null : itemId;
+  }
+  return {
+    ...user,
+    equippedCosmetics: eq,
+  };
+}
+
+export function computeStorySecondaryReward(chapterNumber: number): number {
+  const num = Math.max(1, Math.floor(chapterNumber));
+  return 18 + Math.min(22, Math.floor(num / 2));
+}
+
+export function computeRoomClearSecondaryReward(
+  user: Pick<UserProfile, 'roomBestFloor' | 'roomBossMilestonesDefeated'>,
+  clearedRoom: number
+): {
+  baseSecondary: number;
+  firstBossBonus: number;
+  totalSecondaryEarned: number;
+  isBossRoom: boolean;
+  isFirstBossMilestone: boolean;
+  isNewBestFloor: boolean;
+  nextBestFloor: number;
+  nextBossMilestones: number[];
+} {
+  const room = Math.max(1, Math.floor(clearedRoom));
+  const isBossRoom = room % 10 === 0;
+  const isRespiteRoom = room % 5 === 0 && !isBossRoom;
+  const prevBest = Math.max(0, Math.floor(Number(user.roomBestFloor || 0)));
+  const isNewBestFloor = room > prevBest;
+  const nextBestFloor = Math.max(prevBest, room);
+
+  const prevMilestones = Array.isArray(user.roomBossMilestonesDefeated)
+    ? user.roomBossMilestonesDefeated
+        .map((n) => Math.floor(Number(n)))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    : [];
+  const isFirstBossMilestone = isBossRoom && !prevMilestones.includes(room);
+  const nextBossMilestones = isFirstBossMilestone
+    ? [...prevMilestones, room].sort((a, b) => a - b)
+    : prevMilestones;
+
+  const baseSecondary = isBossRoom
+    ? 28 + Math.min(35, Math.floor(room / 2))
+    : isRespiteRoom
+    ? 4
+    : 6 + Math.min(12, Math.floor(room / 4));
+  const firstBossBonus = isFirstBossMilestone
+    ? 40 + Math.min(60, Math.floor(room * 1.5))
+    : 0;
+
+  return {
+    baseSecondary,
+    firstBossBonus,
+    totalSecondaryEarned: baseSecondary + firstBossBonus,
+    isBossRoom,
+    isFirstBossMilestone,
+    isNewBestFloor,
+    nextBestFloor,
+    nextBossMilestones,
+  };
+}
+
+export interface AccessoryTransactionResult {
+  ok: boolean;
+  error?: string;
+  user?: UserProfile;
+  balanceBefore: number;
+  balanceAfter: number;
+  deltaSecondary: number;
+}
+
+export function buyAccessoryShopItemTransaction(
+  user: UserProfile,
+  accessoryId: string,
+  dateKey: string = toShopLocalDateKey(new Date())
+): AccessoryTransactionResult {
+  const balanceBefore = Math.max(0, Math.floor(Number(user.secondaryCoins || 0)));
+  const rotation = getDailyAccessoryShopRotation(dateKey);
+  const item = rotation.items.find((i) => i.id === accessoryId);
+  if (!item) {
+    return {
+      ok: false,
+      error: 'Este accesorio no forma parte de la rotación diaria de hoy.',
+      balanceBefore,
+      balanceAfter: balanceBefore,
+      deltaSecondary: 0,
+    };
+  }
+
+  const owned = getOwnedAccessoryIds(user);
+  if (owned.includes(item.id)) {
+    return {
+      ok: false,
+      error: 'Ya posees este accesorio en tu inventario.',
+      balanceBefore,
+      balanceAfter: balanceBefore,
+      deltaSecondary: 0,
+    };
+  }
+
+  const boughtToday = getUserAccessoryDailyPurchasesCount(user, dateKey);
+  if (boughtToday >= ACCESSORY_DAILY_PURCHASE_LIMIT) {
+    return {
+      ok: false,
+      error: `Límite diario alcanzado (${ACCESSORY_DAILY_PURCHASE_LIMIT}/${ACCESSORY_DAILY_PURCHASE_LIMIT} accesorios hoy). Vuelve mañana.`,
+      balanceBefore,
+      balanceAfter: balanceBefore,
+      deltaSecondary: 0,
+    };
+  }
+
+  if (balanceBefore < item.price) {
+    return {
+      ok: false,
+      error: `Necesitas ${item.price} ${SECONDARY_CURRENCY_NAME} (tienes ${balanceBefore}).`,
+      balanceBefore,
+      balanceAfter: balanceBefore,
+      deltaSecondary: 0,
+    };
+  }
+
+  const balanceAfter = balanceBefore - item.price;
+  const nextOwned = [...owned, item.id];
+  const prevEq = { ...(user.equippedAccessories || {}) };
+  const slotKey = getAccessorySlotKey(item.slot);
+  // Auto-equip if that slot is currently empty for immediate gratification
+  const nextEq = prevEq[slotKey] ? prevEq : { ...prevEq, [slotKey]: item.id };
+
+  return {
+    ok: true,
+    user: {
+      ...user,
+      secondaryCoins: balanceAfter,
+      ownedAccessories: nextOwned,
+      equippedAccessories: nextEq,
+      accessoryShopDailyPurchases: {
+        dateKey,
+        itemsBought: boughtToday + 1,
+      },
+    },
+    balanceBefore,
+    balanceAfter,
+    deltaSecondary: -item.price,
+  };
+}
+
+export function equipAccessoryTransaction(
+  user: UserProfile,
+  accessoryId: string | null,
+  slotOverride?: keyof NonNullable<UserProfile['equippedAccessories']>
+): UserProfile {
+  if (!accessoryId) {
+    if (!slotOverride) return user;
+    return {
+      ...user,
+      equippedAccessories: {
+        ...(user.equippedAccessories || {}),
+        [slotOverride]: null,
+      },
+    };
+  }
+  const def = getAccessoryById(accessoryId);
+  if (!def) return user;
+  const owned = getOwnedAccessoryIds(user);
+  if (!owned.includes(def.id)) return user;
+  const slotKey = getAccessorySlotKey(def.slot);
+  const currentEq = { ...(user.equippedAccessories || {}) };
+  currentEq[slotKey] = currentEq[slotKey] === def.id ? null : def.id;
+  return {
+    ...user,
+    equippedAccessories: currentEq,
+  };
+}
+
+
+

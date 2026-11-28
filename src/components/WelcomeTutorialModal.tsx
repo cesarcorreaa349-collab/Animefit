@@ -46,7 +46,7 @@ const STEPS: TutorialStep[] = [
     title: 'Entrenar — Tus rutinas y series',
     description:
       'Crea tus propias plantillas con barras, mancuernas o máquinas Smith poniendo las series y repeticiones que prefieras.',
-    tip: 'A partir de tu segunda sesión verás cuánto levantaste antes: si superas ese peso ganas +25 XP extra.',
+    tip: 'Sumas 1 XP cada 20 kg levantados. Desde la segunda sesión, superar tu PR anterior suma +15 XP por ejercicio.',
     accentHex: '#FACC15',
     icon: Dumbbell,
   },

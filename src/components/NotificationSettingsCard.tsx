@@ -1,12 +1,10 @@
 import {
-  AlertTriangle,
   Bell,
   BellOff,
   CheckCircle2,
   RefreshCw,
   ShieldAlert,
 } from 'lucide-react';
-import { getNotificationEnvironmentDiagnostics } from '../hooks/useInactivityNotifications';
 
 interface NotificationSettingsCardProps {
   supported: boolean;
@@ -47,13 +45,12 @@ export function NotificationSettingsCard({
   onTestReminder,
   variant = 'card',
 }: NotificationSettingsCardProps) {
-  const envDiag = getNotificationEnvironmentDiagnostics();
   const { isIOS, isAndroid, isStandalone } = getPlatformHints();
 
   const statusMeta = !supported
     ? {
-        label: 'No soportado',
-        colorClass: 'text-[#8A92A2] border-[#1B1E26] bg-[#07080B]',
+        label: 'Aviso en app',
+        colorClass: 'text-[#38BDF8] border-[#38BDF8]/40 bg-[#38BDF8]/10',
       }
     : permission === 'granted'
     ? {
@@ -128,28 +125,22 @@ export function NotificationSettingsCard({
         )}
       </div>
 
-      {/* Unsupported device/browser notice */}
+      {/* In-app fallback info when browser/WebView push is unavailable */}
       {!supported && (
         <div className="rounded-xl bg-[#101218] border border-[#1B1E26] p-3 text-xs text-[#8A92A2] leading-relaxed flex items-start gap-2.5">
-          <AlertTriangle className="w-4 h-4 text-[#F59E0B] shrink-0 mt-0.5" />
+          <Bell className="w-4 h-4 text-[#38BDF8] shrink-0 mt-0.5" />
           <div className="space-y-1">
             <strong className="text-[#F1F5F9] block">
-              Notificaciones del sistema no soportadas en este entorno
+              Recordatorio automático dentro de la app activo
             </strong>
-            {envDiag.unsupportedReason && (
-              <p className="text-[11px] text-[#CBD5E1]">
-                Motivo detectado: {envDiag.unsupportedReason}
-              </p>
-            )}
             {isIOS && !isStandalone ? (
               <p>
-                En iPhone y iPad, Apple solo habilita notificaciones web cuando instalás la app: tocá{' '}
-                <strong className="text-[#F1F5F9]">Compartir → Agregar a pantalla de inicio</strong>{' '}
-                y ábrela desde ese ícono.
+                En iPhone y iPad, si querés avisos externos instalá la app con{' '}
+                <strong className="text-[#F1F5F9]">Compartir → Agregar a pantalla de inicio</strong>.
               </p>
             ) : (
               <p>
-                Como respaldo automático, AnimeFit mostrará un <strong className="text-[#38BDF8]">aviso visible dentro de la app</strong> si pasan 24 horas sin registrar actividad. Para avisos fuera de la app, ábrela en Chrome/Brave (HTTPS) como PWA instalada.
+                AnimeFit mostrará un <strong className="text-[#38BDF8]">aviso visible dentro de la app</strong> si pasan 24 horas sin registrar actividad.
               </p>
             )}
           </div>

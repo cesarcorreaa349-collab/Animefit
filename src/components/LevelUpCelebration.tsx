@@ -1,11 +1,16 @@
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { ArrowRight, Sparkles } from 'lucide-react';
+import { getPhaseVisualProfile } from '../data/characterImages';
+import { CharacterAvatar } from './CharacterAvatar';
 
 export interface LevelUpCelebrationEvent {
   id: number;
   newLevel: number;
   evolved: boolean;
   stageName: string;
+  prevStageName?: string;
+  charId?: string;
   auraColor: string;
 }
 
@@ -59,10 +64,14 @@ export function LevelUpCelebration({ event }: LevelUpCelebrationProps) {
 
     const width = window.innerWidth;
     const height = window.innerHeight;
+    const phaseTheme = event.charId
+      ? getPhaseVisualProfile(event.charId, event.stageName, event.newLevel)
+      : null;
+    const themeColor = phaseTheme?.auraColor || event.auraColor || '#FACC15';
     const palette = [
       '#FACC15',
       '#38BDF8',
-      event.auraColor || '#FACC15',
+      themeColor,
       '#22C55E',
       '#F1F5F9',
     ];
@@ -99,14 +108,13 @@ export function LevelUpCelebration({ event }: LevelUpCelebrationProps) {
       }
     };
 
-    // Center Ki burst + twin upper-side confetti cannons
-    spawnBurst(width * 0.5, height * 0.42, 64, -Math.PI, Math.PI, 4, 13.5);
-    spawnBurst(width * 0.14, height * 0.72, 34, -Math.PI * 0.48, -Math.PI * 0.18, 8, 16);
-    spawnBurst(width * 0.86, height * 0.72, 34, -Math.PI * 0.82, -Math.PI * 0.52, 8, 16);
+    spawnBurst(width * 0.5, height * 0.4, 58, -Math.PI, Math.PI, 4, 13);
+    spawnBurst(width * 0.15, height * 0.72, 28, -Math.PI * 0.48, -Math.PI * 0.18, 7.5, 15);
+    spawnBurst(width * 0.85, height * 0.72, 28, -Math.PI * 0.82, -Math.PI * 0.52, 7.5, 15);
 
     let rafId = 0;
     const startedAt = performance.now();
-    const durationMs = 3100;
+    const durationMs = 2750;
 
     const tick = (now: number) => {
       const elapsed = now - startedAt;
@@ -121,8 +129,8 @@ export function LevelUpCelebration({ event }: LevelUpCelebrationProps) {
         p.rotation += p.vr;
         p.tilt += p.vtilt;
 
-        if (elapsed > durationMs * 0.58) {
-          p.alpha = Math.max(0, p.alpha - 0.024);
+        if (elapsed > durationMs * 0.56) {
+          p.alpha = Math.max(0, p.alpha - 0.028);
         }
 
         if (p.alpha <= 0.01 || p.y > window.innerHeight + 40) continue;
@@ -146,7 +154,7 @@ export function LevelUpCelebration({ event }: LevelUpCelebrationProps) {
         ctx.restore();
       }
 
-      if (alive > 0 && elapsed < durationMs + 400) {
+      if (alive > 0 && elapsed < durationMs + 200) {
         rafId = window.requestAnimationFrame(tick);
       } else {
         ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
@@ -163,17 +171,22 @@ export function LevelUpCelebration({ event }: LevelUpCelebrationProps) {
 
   if (!event) return null;
 
+  const phaseTheme = event.charId
+    ? getPhaseVisualProfile(event.charId, event.stageName, event.newLevel)
+    : null;
+  const themeColor = phaseTheme?.auraColor || event.auraColor || '#FACC15';
+
   const content = (
     <div
       key={event.id}
       aria-hidden="true"
       className="fixed inset-0 z-[95] pointer-events-none overflow-hidden"
     >
-      {/* Initial radial Ki energy flash */}
+      {/* Initial radial thematic aura flash */}
       <div
         className="absolute inset-0 levelup-flash"
         style={{
-          background: `radial-gradient(circle at 50% 45%, rgba(250, 204, 21, 0.55), ${event.auraColor}33 42%, rgba(56, 189, 248, 0.14) 68%, transparent 85%)`,
+          background: `radial-gradient(circle at 50% 42%, ${themeColor}77, ${themeColor}26 42%, rgba(56, 189, 248, 0.14) 68%, transparent 85%)`,
         }}
       />
 
@@ -181,38 +194,93 @@ export function LevelUpCelebration({ event }: LevelUpCelebrationProps) {
       <div className="absolute inset-0 flex items-center justify-center">
         <div
           className="w-56 h-56 rounded-full border-[3px] levelup-ring"
-          style={{ borderColor: '#FACC15' }}
+          style={{ borderColor: themeColor }}
         />
       </div>
       <div className="absolute inset-0 flex items-center justify-center">
         <div
           className="w-40 h-40 rounded-full border-2 levelup-ring-delayed"
-          style={{ borderColor: event.auraColor || '#38BDF8' }}
+          style={{ borderColor: '#FACC15' }}
         />
       </div>
 
-      {/* Confetti & Ki sparks canvas */}
+      {/* Confetti & Aura sparks canvas */}
       <canvas ref={canvasRef} className="absolute inset-0 block" />
 
-      {/* Crisp top level-up callout banner */}
-      <div className="absolute top-6 left-1/2 -translate-x-1/2 w-[92%] max-w-sm flex justify-center">
-        <div
-          className="levelup-banner px-5 py-2.5 rounded-2xl bg-[#07080B]/95 border text-center shadow-2xl"
-          style={{ borderColor: '#FACC15' }}
-        >
-          <div className="text-[11px] font-extrabold tracking-wide text-[#38BDF8]">
-            {event.evolved ? '⚡ ¡EVOLUCIÓN DESBLOQUEADA!' : '🔥 ¡KI INCREMENTADO!'}
-          </div>
-          <div className="text-lg font-black text-[#FACC15] tabular-nums font-[family-name:var(--font-display)]">
-            ¡Subiste al Nivel {event.newLevel}!
-          </div>
-          {event.evolved && (
-            <div className="text-xs font-bold text-[#F1F5F9] mt-0.5">
+      {/* Evolution Transformation Card (2.8s) or Standard Level-Up Banner */}
+      {event.evolved && event.charId ? (
+        <div className="absolute top-12 left-1/2 -translate-x-1/2 w-[92%] max-w-sm flex justify-center">
+          <div
+            className="evo-stage-card w-full px-5 py-4 rounded-2xl bg-[#07080B]/95 border-2 text-center shadow-2xl"
+            style={{
+              borderColor: themeColor,
+              boxShadow: `0 0 36px ${themeColor}44`,
+            }}
+          >
+            <div
+              className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider"
+              style={{ color: themeColor }}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              ¡Transformación Desbloqueada!
+            </div>
+
+            <div className="relative h-28 flex items-center justify-center my-2.5">
+              {/* Previous Phase Portrait morphing out */}
+              <div className="evo-prev-portrait absolute flex items-center justify-center">
+                <CharacterAvatar
+                  charId={event.charId}
+                  stageName={event.prevStageName}
+                  size="lg"
+                />
+              </div>
+              {/* New Evolution Portrait surging in */}
+              <div className="evo-new-portrait absolute flex items-center justify-center">
+                <div
+                  className="rounded-full p-1"
+                  style={{
+                    boxShadow: `0 0 28px ${themeColor}AA`,
+                  }}
+                >
+                  <CharacterAvatar
+                    charId={event.charId}
+                    stageName={event.stageName}
+                    level={event.newLevel}
+                    size="lg"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="text-lg font-black text-[#F1F5F9] leading-tight font-[family-name:var(--font-display)]">
               {event.stageName}
             </div>
-          )}
+            <div className="mt-1 flex items-center justify-center gap-1.5 text-xs font-bold text-[#8A92A2] tabular-nums">
+              {event.prevStageName && (
+                <>
+                  <span className="truncate max-w-[130px]">{event.prevStageName}</span>
+                  <ArrowRight className="w-3.5 h-3.5 text-[#FACC15] shrink-0" />
+                </>
+              )}
+              <span style={{ color: themeColor }}>Nivel {event.newLevel}</span>
+            </div>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="absolute top-6 left-1/2 -translate-x-1/2 w-[92%] max-w-sm flex justify-center">
+          <div
+            className="levelup-banner px-5 py-2.5 rounded-2xl bg-[#07080B]/95 border text-center shadow-2xl"
+            style={{ borderColor: '#FACC15' }}
+          >
+            <div className="text-[11px] font-extrabold tracking-wide text-[#38BDF8]">
+              🔥 ¡PODER INCREMENTADO!
+            </div>
+            <div className="text-lg font-black text-[#FACC15] tabular-nums font-[family-name:var(--font-display)]">
+              ¡Subiste al Nivel {event.newLevel}!
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 

@@ -108,3 +108,140 @@ export const CHARACTER_IMAGES: Record<string, string> = {
   seiya: 'https://s4.anilist.co/file/anilistcdn/character/large/2285.jpg', // Seiya
   jotaro: 'https://s4.anilist.co/file/anilistcdn/character/large/b4003-gWDSEGbeOAll.png', // Joutarou Kuujou
 };
+
+import { CHARACTERS } from './characters';
+
+export interface PhaseVisualProfile {
+  stageIndex: number;
+  totalStages: number;
+  stageName: string;
+  auraColor: string;
+  glowRgba: string;
+  imageFilter: string;
+  overlayGradient: string;
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const clean = (hex || '#FACC15').replace('#', '');
+  if (clean.length !== 6) return `rgba(250, 204, 21, ${alpha})`;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) {
+    return `rgba(250, 204, 21, ${alpha})`;
+  }
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/**
+ * Resolves visual aura, glow, and subtle filter distinction for every character phase/evolution.
+ */
+export function getPhaseVisualProfile(
+  charId: string,
+  stageName?: string,
+  level?: number
+): PhaseVisualProfile {
+  const char = CHARACTERS.find((c) => c.id === charId) || CHARACTERS[0];
+  let stageIndex = 0;
+  let resolvedName = stageName || char.stages[0]?.phase || 'Base';
+
+  if (stageName) {
+    const byName = char.stages.findIndex(
+      (s) => s.phase.toLowerCase() === stageName.toLowerCase()
+    );
+    if (byName >= 0) {
+      stageIndex = byName;
+      resolvedName = char.stages[byName].phase;
+    }
+  } else if (typeof level === 'number') {
+    for (let i = 0; i < char.stages.length; i++) {
+      if (level >= char.stages[i].levelReq) {
+        stageIndex = i;
+        resolvedName = char.stages[i].phase;
+      }
+    }
+  }
+
+  const lower = resolvedName.toLowerCase();
+  let auraColor = char.auraColor || '#FACC15';
+
+  // Phase-specific thematic aura colors across evolutions
+  if (/ultra instinto|nika|gear fifth|dios del trueno|estornudo|cósmico/i.test(lower)) {
+    auraColor = '#E2E8F0';
+  } else if (/blue|blue evolution|kamui|relámpago|rayo|hielo|agua|niebla|azul|infinito|tormenta/i.test(lower)) {
+    auraColor = '#38BDF8';
+  } else if (/ultra ego|black freezer|beast|rinnegan|vacío púrpura|monarca|demonio fleur|místico/i.test(lower)) {
+    auraColor = '#A855F7';
+  } else if (/dios|kaioken|gear fourth|haki del rey|baryon|carmesí|llama|purgatorio|hellflame|red riot|mugetsu|vasto lorde|susanoo|sharingan|black flash|destello oscuro/i.test(lower)) {
+    auraColor = '#EF4444';
+  } else if (/super saiyajin|ssj|golden|sabio|seis caminos|kurama|kyubi|armadura dorada|solar|overdrive|united states/i.test(lower)) {
+    auraColor = '#FACC15';
+  } else if (/orange piccolo|ifrit|ent|mera mera|sobrehumana|gear second|rose/i.test(lower)) {
+    auraColor = '#F97316';
+  } else if (/namek|kami|potencial|puerta|esmeralda|viento|bestia verde|nen/i.test(lower)) {
+    auraColor = '#22C55E';
+  }
+
+  const totalStages = Math.max(1, char.stages.length);
+  const progress = totalStages > 1 ? stageIndex / (totalStages - 1) : 0;
+
+  // Subtle progressive contrast/saturation boost without distorting artwork legibility
+  const contrast = (1 + progress * 0.1).toFixed(2);
+  const saturate = (1 + progress * 0.18).toFixed(2);
+  const brightness = stageIndex >= totalStages - 1 ? '1.06' : (1 + progress * 0.04).toFixed(2);
+
+  return {
+    stageIndex,
+    totalStages,
+    stageName: resolvedName,
+    auraColor,
+    glowRgba: hexToRgba(auraColor, 0.35 + progress * 0.32),
+    imageFilter:
+      stageIndex === 0
+        ? 'none'
+        : `contrast(${contrast}) saturate(${saturate}) brightness(${brightness})`,
+    overlayGradient:
+      stageIndex === 0
+        ? 'none'
+        : `radial-gradient(circle at 50% 82%, ${hexToRgba(auraColor, 0.24 + progress * 0.18)}, transparent 65%)`,
+  };
+}
+
+/**
+ * Specific per-phase image override map (every character + phase in the catalog has an entry).
+ * When a phase shares the canonical portrait URL, visual aura & phase framing distinguish it,
+ * and CharacterAvatar cleanly falls back to CHARACTER_IMAGES[charId] if any override fails to load.
+ */
+const PHASE_IMAGE_OVERRIDES: Record<string, Record<string, string>> = {};
+
+export const CHARACTER_PHASE_IMAGES: Record<string, Record<string, string>> =
+  CHARACTERS.reduce<Record<string, Record<string, string>>>((acc, char) => {
+    const baseImg = CHARACTER_IMAGES[char.id] || CHARACTER_IMAGES.goku;
+    const overrides = PHASE_IMAGE_OVERRIDES[char.id] || {};
+    const stageMap: Record<string, string> = {};
+    for (const st of char.stages) {
+      stageMap[st.phase] = overrides[st.phase] || baseImg;
+    }
+    acc[char.id] = stageMap;
+    return acc;
+  }, {});
+
+export function getCharacterImageCandidates(
+  charId: string,
+  stageName?: string,
+  level?: number
+): string[] {
+  const baseImg = CHARACTER_IMAGES[charId] || CHARACTER_IMAGES.goku;
+  const profile = getPhaseVisualProfile(charId, stageName, level);
+  const phaseMap = CHARACTER_PHASE_IMAGES[charId];
+  const phaseImg = phaseMap?.[profile.stageName];
+
+  const list: string[] = [];
+  if (phaseImg) list.push(phaseImg);
+  if (baseImg && !list.includes(baseImg)) list.push(baseImg);
+  if (CHARACTER_IMAGES.goku && !list.includes(CHARACTER_IMAGES.goku)) {
+    list.push(CHARACTER_IMAGES.goku);
+  }
+  return list;
+}
+

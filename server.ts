@@ -11,10 +11,26 @@ import {
   getCharacterPhaseMoveset,
 } from './src/data/movesets.ts';
 import { SEED_GROUPS, SEED_USERS } from './src/data/exercises.ts';
+import {
+  buildUserPvpCosmeticLoadout,
+  DAILY_PVP_COIN_CAP,
+  DAILY_PVP_XP_CAP,
+  getShopItemById,
+} from './src/data/shopCatalog.ts';
 import type {
   CommunityGroup,
+  DailyAccessoryPurchaseTracker,
+  DailyPvpXpTracker,
+  DailyShopPurchaseTracker,
+  DailySurvivalCoinTracker,
+  EquippedAccessories,
+  EquippedCosmetics,
   FriendNotification,
+  PvpCosmeticLoadout,
+  PvpEmoteEvent,
+  PvpMatchKind,
   Routine,
+  UserInventoryEntry,
   UserProfile,
 } from './src/types/animefit.ts';
 
@@ -62,9 +78,28 @@ interface DbUserRecord {
   storyRoutineId?: string;
   pvpWins?: number;
   pvpLosses?: number;
+  survivalBestWave?: number;
+  dailyStreakCount?: number;
+  dailyStreakBest?: number;
+  dailyStreakLastDate?: string | null;
   story?: unknown;
   profileSetup?: unknown;
   wellness?: unknown;
+  coins?: number;
+  secondaryCoins?: number;
+  unlockedChars?: string[];
+  charXpOffsets?: Record<string, number>;
+  inventory?: UserInventoryEntry[];
+  equippedCosmetics?: EquippedCosmetics;
+  ownedAccessories?: string[];
+  equippedAccessories?: EquippedAccessories;
+  shopDailyPurchases?: DailyShopPurchaseTracker;
+  accessoryShopDailyPurchases?: DailyAccessoryPurchaseTracker;
+  pvpDailyXp?: DailyPvpXpTracker;
+  survivalDailyCoins?: DailySurvivalCoinTracker;
+  pvpDailyCoinTracker?: { dateKey: string; coinsEarned: number };
+  roomBestFloor?: number;
+  roomBossMilestonesDefeated?: number[];
   [key: string]: unknown;
 }
 
@@ -510,9 +545,24 @@ function sanitizePublicUsers(
         : [],
       pvpWins: Number(u.pvpWins || 0),
       pvpLosses: Number(u.pvpLosses || 0),
+      equippedCosmetics: u.equippedCosmetics,
     };
   }
   return out;
+}
+
+function getLocalServerDateKey(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function sanitizeDateKey(val: unknown): string | null {
+  return typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val.trim())
+    ? val.trim()
+    : null;
 }
 
 function getLevelFromXp(xp: number): number {
@@ -534,6 +584,8 @@ interface FighterSeed {
   level: number;
   workoutsDone: number;
   prsCount: number;
+  cosmetics?: PvpCosmeticLoadout;
+  localDateKey?: string;
 }
 
 interface PvpFighterState {
@@ -553,6 +605,7 @@ interface PvpFighterState {
   ultBoostPct?: number;
   streakLabel?: string | null;
   streakCount?: number;
+  cosmetics?: PvpCosmeticLoadout;
 }
 
 interface PvpClashState {
@@ -592,6 +645,7 @@ interface PvpCombatEvent {
 
 interface PvpMatchState {
   id: string;
+  matchKind?: PvpMatchKind;
   status: 'active' | 'finished';
   turn: string;
   turnEndsAt?: number;
@@ -603,8 +657,11 @@ interface PvpMatchState {
   playerStatus?: Record<string, PvpPlayerConnectionStatus>;
   clash: PvpClashState | null;
   lastEvent?: PvpCombatEvent | null;
+  lastEmote?: PvpEmoteEvent | null;
   damageDealt?: Record<string, number>;
   xpRewards?: Record<string, number>;
+  coinRewards?: Record<string, number>;
+  xpCapNotices?: Record<string, string>;
   rematchRequestedBy?: string[];
   log: string[];
   rewardsGranted?: boolean;
@@ -648,6 +705,11 @@ function buildFighterState(seed: FighterSeed): PvpFighterState {
   const maxHp = Math.round(185 + level * 21 + workoutsDone * 5 + prsCount * 8);
   const baseAtk = Math.round(22 + level * 4 + Math.min(26, workoutsDone * 1.4));
   const critChance = Math.min(0.45, 0.16 + prsCount * 0.015);
+  const cosmetics =
+    seed.cosmetics ||
+    (dbUser
+      ? buildUserPvpCosmeticLoadout(dbUser as unknown as UserProfile)
+      : undefined);
 
   return {
     username: seed.username,
@@ -666,6 +728,7 @@ function buildFighterState(seed: FighterSeed): PvpFighterState {
     ultBoostPct: bonus.ultBoostPct,
     streakLabel: bonus.badgeLabel,
     streakCount: bonus.streakCount,
+    cosmetics,
   };
 }
 
@@ -867,10 +930,51 @@ async function startServer() {
           : undefined,
       pvpWins: Math.max(0, Number(incoming.pvpWins || 0) || 0),
       pvpLosses: Math.max(0, Number(incoming.pvpLosses || 0) || 0),
+      survivalBestWave: Math.max(
+        0,
+        Math.floor(Number(incoming.survivalBestWave || 0) || 0)
+      ),
+      dailyStreakCount: Math.max(0, Number(incoming.dailyStreakCount || 0) || 0),
+      dailyStreakBest: Math.max(0, Number(incoming.dailyStreakBest || 0) || 0),
+      dailyStreakLastDate:
+        typeof incoming.dailyStreakLastDate === 'string' &&
+        /^\d{4}-\d{2}-\d{2}$/.test(incoming.dailyStreakLastDate)
+          ? incoming.dailyStreakLastDate
+          : null,
       story: incoming.story !== undefined ? incoming.story : undefined,
       profileSetup:
         incoming.profileSetup !== undefined ? incoming.profileSetup : undefined,
       wellness: sanitizeWellnessPayload(incoming.wellness, undefined),
+      coins:
+        typeof incoming.coins === 'number' && Number.isFinite(incoming.coins)
+          ? Math.max(0, Math.floor(incoming.coins))
+          : 0,
+      unlockedChars: Array.isArray(incoming.unlockedChars)
+        ? incoming.unlockedChars.map(String).filter(Boolean)
+        : undefined,
+      charXpOffsets:
+        incoming.charXpOffsets && typeof incoming.charXpOffsets === 'object'
+          ? (incoming.charXpOffsets as Record<string, number>)
+          : undefined,
+      inventory: Array.isArray(incoming.inventory)
+        ? (incoming.inventory as UserInventoryEntry[])
+        : undefined,
+      equippedCosmetics:
+        incoming.equippedCosmetics && typeof incoming.equippedCosmetics === 'object'
+          ? (incoming.equippedCosmetics as EquippedCosmetics)
+          : undefined,
+      shopDailyPurchases:
+        incoming.shopDailyPurchases && typeof incoming.shopDailyPurchases === 'object'
+          ? (incoming.shopDailyPurchases as DailyShopPurchaseTracker)
+          : undefined,
+      pvpDailyXp:
+        incoming.pvpDailyXp && typeof incoming.pvpDailyXp === 'object'
+          ? (incoming.pvpDailyXp as DailyPvpXpTracker)
+          : undefined,
+      survivalDailyCoins:
+        incoming.survivalDailyCoins && typeof incoming.survivalDailyCoins === 'object'
+          ? (incoming.survivalDailyCoins as DailySurvivalCoinTracker)
+          : undefined,
     };
 
     db.users[rawUsername] = baseRecord;
@@ -1355,6 +1459,25 @@ async function startServer() {
         Number(existing.pvpLosses || 0),
         Number(incoming.pvpLosses || 0)
       ),
+      survivalBestWave: Math.max(
+        Math.floor(Number(existing.survivalBestWave || 0)),
+        Math.floor(Number(incoming.survivalBestWave || 0))
+      ),
+      dailyStreakCount: Math.max(
+        Number(existing.dailyStreakCount || 0),
+        Number(incoming.dailyStreakCount || 0)
+      ),
+      dailyStreakBest: Math.max(
+        Number(existing.dailyStreakBest || 0),
+        Number(incoming.dailyStreakBest || 0)
+      ),
+      dailyStreakLastDate:
+        typeof incoming.dailyStreakLastDate === 'string' &&
+        /^\d{4}-\d{2}-\d{2}$/.test(incoming.dailyStreakLastDate) &&
+        (!existing.dailyStreakLastDate ||
+          incoming.dailyStreakLastDate >= String(existing.dailyStreakLastDate))
+          ? incoming.dailyStreakLastDate
+          : (existing.dailyStreakLastDate ?? null),
       prs:
         incoming.prs && typeof incoming.prs === 'object'
           ? { ...(existing.prs || {}), ...incoming.prs }
@@ -1393,6 +1516,87 @@ async function startServer() {
           ? incoming.profileSetup
           : existing.profileSetup,
       wellness: sanitizedWellness,
+      coins:
+        typeof incoming.coins === 'number' && Number.isFinite(incoming.coins)
+          ? Math.max(0, Math.floor(incoming.coins))
+          : Math.max(0, Math.floor(Number(existing.coins || 0))),
+      unlockedChars: Array.isArray(incoming.unlockedChars)
+        ? Array.from(
+            new Set([
+              ...(Array.isArray(existing.unlockedChars) ? existing.unlockedChars : []),
+              ...incoming.unlockedChars.map(String).filter(Boolean),
+            ])
+          )
+        : existing.unlockedChars,
+      charXpOffsets:
+        incoming.charXpOffsets && typeof incoming.charXpOffsets === 'object'
+          ? { ...(existing.charXpOffsets || {}), ...(incoming.charXpOffsets as Record<string, number>) }
+          : existing.charXpOffsets,
+      inventory: Array.isArray(incoming.inventory)
+        ? (incoming.inventory as UserInventoryEntry[])
+        : existing.inventory,
+      equippedCosmetics:
+        incoming.equippedCosmetics && typeof incoming.equippedCosmetics === 'object'
+          ? (incoming.equippedCosmetics as EquippedCosmetics)
+          : existing.equippedCosmetics,
+      shopDailyPurchases:
+        incoming.shopDailyPurchases && typeof incoming.shopDailyPurchases === 'object'
+          ? (incoming.shopDailyPurchases as DailyShopPurchaseTracker)
+          : existing.shopDailyPurchases,
+      pvpDailyXp:
+        incoming.pvpDailyXp &&
+        typeof incoming.pvpDailyXp === 'object' &&
+        (!existing.pvpDailyXp ||
+          String(incoming.pvpDailyXp.dateKey || '') > String(existing.pvpDailyXp.dateKey || '') ||
+          (incoming.pvpDailyXp.dateKey === existing.pvpDailyXp.dateKey &&
+            Number(incoming.pvpDailyXp.xpEarned || 0) >= Number(existing.pvpDailyXp.xpEarned || 0)))
+          ? (incoming.pvpDailyXp as DailyPvpXpTracker)
+          : existing.pvpDailyXp,
+      survivalDailyCoins:
+        incoming.survivalDailyCoins && typeof incoming.survivalDailyCoins === 'object'
+          ? (incoming.survivalDailyCoins as DailySurvivalCoinTracker)
+          : existing.survivalDailyCoins,
+      secondaryCoins:
+        typeof incoming.secondaryCoins === 'number' &&
+        Number.isFinite(incoming.secondaryCoins)
+          ? Math.max(0, Math.floor(incoming.secondaryCoins))
+          : Math.max(0, Math.floor(Number(existing.secondaryCoins || 0))),
+      ownedAccessories: Array.isArray(incoming.ownedAccessories)
+        ? Array.from(
+            new Set([
+              ...(Array.isArray(existing.ownedAccessories)
+                ? existing.ownedAccessories
+                : []),
+              ...incoming.ownedAccessories.map(String).filter(Boolean),
+            ])
+          )
+        : existing.ownedAccessories,
+      equippedAccessories:
+        incoming.equippedAccessories && typeof incoming.equippedAccessories === 'object'
+          ? (incoming.equippedAccessories as EquippedAccessories)
+          : existing.equippedAccessories,
+      accessoryShopDailyPurchases:
+        incoming.accessoryShopDailyPurchases &&
+        typeof incoming.accessoryShopDailyPurchases === 'object'
+          ? (incoming.accessoryShopDailyPurchases as DailyAccessoryPurchaseTracker)
+          : existing.accessoryShopDailyPurchases,
+      roomBestFloor: Math.max(
+        Math.floor(Number(existing.roomBestFloor || 0)),
+        Math.floor(Number(incoming.roomBestFloor || 0))
+      ),
+      roomBossMilestonesDefeated: Array.from(
+        new Set([
+          ...(Array.isArray(existing.roomBossMilestonesDefeated)
+            ? existing.roomBossMilestonesDefeated
+            : []),
+          ...(Array.isArray(incoming.roomBossMilestonesDefeated)
+            ? incoming.roomBossMilestonesDefeated
+            : []),
+        ])
+      )
+        .map((n) => Math.floor(Number(n)))
+        .filter((n) => Number.isFinite(n) && n > 0)
+        .sort((a, b) => a - b),
       username: existing.username,
       passHash: existing.passHash,
     };
@@ -1464,6 +1668,24 @@ async function startServer() {
           Number(existing.pvpLosses || 0),
           Number(incoming.pvpLosses || 0)
         ),
+        survivalBestWave: Math.max(
+          Math.floor(Number(existing.survivalBestWave || 0)),
+          Math.floor(Number(incoming.survivalBestWave || 0))
+        ),
+        dailyStreakCount:
+          typeof incoming.dailyStreakCount === 'number' &&
+          Number.isFinite(incoming.dailyStreakCount)
+            ? Math.max(0, Math.round(incoming.dailyStreakCount))
+            : Number(existing.dailyStreakCount || 0),
+        dailyStreakBest: Math.max(
+          Number(existing.dailyStreakBest || 0),
+          Number(incoming.dailyStreakBest || 0)
+        ),
+        dailyStreakLastDate:
+          typeof incoming.dailyStreakLastDate === 'string' &&
+          /^\d{4}-\d{2}-\d{2}$/.test(incoming.dailyStreakLastDate)
+            ? incoming.dailyStreakLastDate
+            : (existing.dailyStreakLastDate ?? null),
         prs:
           incoming.prs && typeof incoming.prs === 'object'
             ? incoming.prs
@@ -1497,6 +1719,77 @@ async function startServer() {
             ? incoming.profileSetup
             : existing.profileSetup,
         wellness: sanitizedWellness,
+        coins:
+          typeof incoming.coins === 'number' && Number.isFinite(incoming.coins)
+            ? Math.max(0, Math.floor(incoming.coins))
+            : Math.max(0, Math.floor(Number(existing.coins || 0))),
+        unlockedChars: Array.isArray(incoming.unlockedChars)
+          ? incoming.unlockedChars.map(String).filter(Boolean)
+          : existing.unlockedChars,
+        charXpOffsets:
+          incoming.charXpOffsets && typeof incoming.charXpOffsets === 'object'
+            ? (incoming.charXpOffsets as Record<string, number>)
+            : existing.charXpOffsets,
+        inventory: Array.isArray(incoming.inventory)
+          ? (incoming.inventory as UserInventoryEntry[])
+          : existing.inventory,
+        equippedCosmetics:
+          incoming.equippedCosmetics && typeof incoming.equippedCosmetics === 'object'
+            ? (incoming.equippedCosmetics as EquippedCosmetics)
+            : existing.equippedCosmetics,
+        shopDailyPurchases:
+          incoming.shopDailyPurchases && typeof incoming.shopDailyPurchases === 'object'
+            ? (incoming.shopDailyPurchases as DailyShopPurchaseTracker)
+            : existing.shopDailyPurchases,
+        pvpDailyXp:
+          incoming.pvpDailyXp &&
+          typeof incoming.pvpDailyXp === 'object' &&
+          (!existing.pvpDailyXp ||
+            String(incoming.pvpDailyXp.dateKey || '') > String(existing.pvpDailyXp.dateKey || '') ||
+            (incoming.pvpDailyXp.dateKey === existing.pvpDailyXp.dateKey &&
+              Number(incoming.pvpDailyXp.xpEarned || 0) >= Number(existing.pvpDailyXp.xpEarned || 0)))
+            ? (incoming.pvpDailyXp as DailyPvpXpTracker)
+            : existing.pvpDailyXp,
+        survivalDailyCoins:
+          incoming.survivalDailyCoins && typeof incoming.survivalDailyCoins === 'object'
+            ? (incoming.survivalDailyCoins as DailySurvivalCoinTracker)
+            : existing.survivalDailyCoins,
+        secondaryCoins:
+          typeof incoming.secondaryCoins === 'number' &&
+          Number.isFinite(incoming.secondaryCoins)
+            ? Math.max(0, Math.floor(incoming.secondaryCoins))
+            : Math.max(0, Math.floor(Number(existing.secondaryCoins || 0))),
+        ownedAccessories: Array.isArray(incoming.ownedAccessories)
+          ? Array.from(
+              new Set(incoming.ownedAccessories.map(String).filter(Boolean))
+            )
+          : existing.ownedAccessories,
+        equippedAccessories:
+          incoming.equippedAccessories && typeof incoming.equippedAccessories === 'object'
+            ? (incoming.equippedAccessories as EquippedAccessories)
+            : existing.equippedAccessories,
+        accessoryShopDailyPurchases:
+          incoming.accessoryShopDailyPurchases &&
+          typeof incoming.accessoryShopDailyPurchases === 'object'
+            ? (incoming.accessoryShopDailyPurchases as DailyAccessoryPurchaseTracker)
+            : existing.accessoryShopDailyPurchases,
+        roomBestFloor: Math.max(
+          Math.floor(Number(existing.roomBestFloor || 0)),
+          Math.floor(Number(incoming.roomBestFloor || 0))
+        ),
+        roomBossMilestonesDefeated: Array.from(
+          new Set([
+            ...(Array.isArray(existing.roomBossMilestonesDefeated)
+              ? existing.roomBossMilestonesDefeated
+              : []),
+            ...(Array.isArray(incoming.roomBossMilestonesDefeated)
+              ? incoming.roomBossMilestonesDefeated
+              : []),
+          ])
+        )
+          .map((n) => Math.floor(Number(n)))
+          .filter((n) => Number.isFinite(n) && n > 0)
+          .sort((a, b) => a - b),
         username: existing.username,
         passHash: existing.passHash,
       };
@@ -1699,6 +1992,26 @@ async function startServer() {
   const disconnectTimers = new Map<string, NodeJS.Timeout>();
   const roomGraceTimers = new Map<string, NodeJS.Timeout>();
   const lastKnownSeeds = new Map<string, FighterSeed>();
+  const publicQueue: string[] = [];
+
+  const removeFromPublicQueue = (username: string) => {
+    const idx = publicQueue.indexOf(username);
+    if (idx !== -1) {
+      publicQueue.splice(idx, 1);
+      return true;
+    }
+    return false;
+  };
+
+  const broadcastQueueSize = () => {
+    for (const qUser of publicQueue) {
+      sendToUser(qUser, {
+        type: 'pvp:queue_status',
+        queued: true,
+        queueSize: publicQueue.length,
+      });
+    }
+  };
 
   const makeEventId = () =>
     `ev_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -1814,39 +2127,109 @@ async function startServer() {
       match.log = [reason, ...match.log.slice(0, 7)];
     }
 
+    const matchKind: PvpMatchKind = match.matchKind || 'private_room';
+    const isPublicRandom = matchKind === 'public_random';
+
     const xpMap: Record<string, number> = {};
-    for (const uname of match.playerOrder) {
-      xpMap[uname] = uname === winnerUsername ? 80 : 35;
-    }
-    match.xpRewards = xpMap;
+    const coinMap: Record<string, number> = {};
+    const noticeMap: Record<string, string> = {};
 
     if (!match.rewardsGranted) {
       match.rewardsGranted = true;
       const db = readPersistedState();
       for (const uname of match.playerOrder) {
         const won = uname === winnerUsername;
-        const xpEarned = won ? 80 : 35;
+        const u = db?.users?.[uname];
+        const dateKey =
+          sanitizeDateKey(lastKnownSeeds.get(uname)?.localDateKey) ||
+          getLocalServerDateKey();
+
+        let xpEarned = 0;
+        let coinsEarned = 0;
+        let xpCapReached = false;
+        let dailyXpEarned = 0;
+        let notice: string | undefined;
+
+        if (isPublicRandom) {
+          const baseXp = won ? 80 : 35;
+          const prevXpTracker = u?.pvpDailyXp;
+          const prevXpToday =
+            prevXpTracker && prevXpTracker.dateKey === dateKey
+              ? Math.max(0, Number(prevXpTracker.xpEarned || 0))
+              : 0;
+          const remainingXp = Math.max(0, DAILY_PVP_XP_CAP - prevXpToday);
+          xpEarned = Math.min(baseXp, remainingXp);
+          dailyXpEarned = prevXpToday + xpEarned;
+          xpCapReached = dailyXpEarned >= DAILY_PVP_XP_CAP;
+
+          if (xpEarned === 0) {
+            notice = `Tope diario de XP en PvP alcanzado (${DAILY_PVP_XP_CAP}/${DAILY_PVP_XP_CAP} XP hoy). Puedes seguir peleando sin límite, pero ganarás 0 XP hasta mañana.`;
+          } else if (xpCapReached) {
+            notice = `Alcanzaste el tope diario de XP PvP (${DAILY_PVP_XP_CAP}/${DAILY_PVP_XP_CAP} XP hoy). Próximos duelos hoy darán 0 XP.`;
+          }
+
+          const baseCoins = won ? 20 : 8;
+          const prevCoinTracker = u?.pvpDailyCoinTracker;
+          const prevCoinsToday =
+            prevCoinTracker && prevCoinTracker.dateKey === dateKey
+              ? Math.max(0, Number(prevCoinTracker.coinsEarned || 0))
+              : 0;
+          const remainingCoins = Math.max(0, DAILY_PVP_COIN_CAP - prevCoinsToday);
+          coinsEarned = Math.min(baseCoins, remainingCoins);
+
+          if (u) {
+            u.pvpDailyXp = { dateKey, xpEarned: dailyXpEarned };
+            u.pvpDailyCoinTracker = {
+              dateKey,
+              coinsEarned: prevCoinsToday + coinsEarned,
+            };
+          }
+        } else {
+          xpEarned = 0;
+          coinsEarned = 0;
+          notice =
+            matchKind === 'friend_duel'
+              ? 'Duelo con amigos / revancha: 0 monedas y 0 XP (protección anti-farmeo). Busca en Arena Pública para obtener recompensas.'
+              : 'Sala privada: 0 monedas y 0 XP (protección anti-farmeo). Busca en Arena Pública para obtener recompensas.';
+        }
+
+        xpMap[uname] = xpEarned;
+        coinMap[uname] = coinsEarned;
+        if (notice) {
+          noticeMap[uname] = notice;
+        }
+
         let totalXp: number | undefined;
+        let totalCoins: number | undefined;
         let pvpWins: number | undefined;
         let pvpLosses: number | undefined;
 
-        if (db?.users?.[uname]) {
-          const u = db.users[uname];
+        if (u) {
           u.xp = Number(u.xp || 0) + xpEarned;
+          u.coins = Math.max(0, Number(u.coins || 0)) + coinsEarned;
           u.pvpWins = Number(u.pvpWins || 0) + (won ? 1 : 0);
           u.pvpLosses = Number(u.pvpLosses || 0) + (won ? 0 : 1);
           totalXp = u.xp;
+          totalCoins = u.coins;
           pvpWins = u.pvpWins;
           pvpLosses = u.pvpLosses;
         }
         sendToUser(uname, {
           type: 'pvp:reward',
           matchId: match.id,
+          matchKind,
           won,
           xpEarned,
+          coinsEarned,
+          xpCapReached,
+          dailyXpEarned,
+          dailyXpCap: DAILY_PVP_XP_CAP,
+          notice,
           totalXp,
+          totalCoins,
           pvpWins,
           pvpLosses,
+          pvpDailyXp: u?.pvpDailyXp,
         });
       }
       if (db) {
@@ -1856,11 +2239,40 @@ async function startServer() {
           // ignore disk errors
         }
       }
+    } else {
+      for (const uname of match.playerOrder) {
+        xpMap[uname] = match.xpRewards?.[uname] ?? 0;
+        coinMap[uname] = match.coinRewards?.[uname] ?? 0;
+      }
+    }
+
+    match.xpRewards = xpMap;
+    match.coinRewards = coinMap;
+    if (Object.keys(noticeMap).length > 0) {
+      match.xpCapNotices = noticeMap;
     }
     broadcastMatch(match);
   };
 
-  const startMatch = (p1Seed: FighterSeed, p2Seed: FighterSeed) => {
+  const startMatch = (
+    p1Seed: FighterSeed,
+    p2Seed: FighterSeed,
+    matchKind: PvpMatchKind = 'private_room'
+  ) => {
+    removeFromPublicQueue(p1Seed.username);
+    removeFromPublicQueue(p2Seed.username);
+    sendToUser(p1Seed.username, {
+      type: 'pvp:queue_status',
+      queued: false,
+      queueSize: publicQueue.length,
+    });
+    sendToUser(p2Seed.username, {
+      type: 'pvp:queue_status',
+      queued: false,
+      queueSize: publicQueue.length,
+    });
+    broadcastQueueSize();
+
     // End any stale match references for these players
     for (const [mId, m] of matches.entries()) {
       if (
@@ -1879,9 +2291,16 @@ async function startServer() {
 
     const p1 = buildFighterState(p1Seed);
     const p2 = buildFighterState(p2Seed);
+    const p1Moveset = getCharacterPhaseMoveset(p1.charId, p1.level, p1.stageName);
+    const p2Moveset = getCharacterPhaseMoveset(p2.charId, p2.level, p2.stageName);
     const id = `pvp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const modeBanner =
+      matchKind === 'public_random'
+        ? '⚔️ ¡ARENA PÚBLICA!'
+        : '⚔️ ¡DUELO PRIVADO / AMISTOSO! (0 monedas · 0 XP)';
     const match: PvpMatchState = {
       id,
+      matchKind,
       status: 'active',
       turn: p1.username,
       turnEndsAt: Date.now() + PVP_TURN_DURATION_MS,
@@ -1899,12 +2318,15 @@ async function startServer() {
       },
       clash: null,
       lastEvent: null,
+      lastEmote: null,
       damageDealt: {
         [p1.username]: 0,
         [p2.username]: 0,
       },
       rematchRequestedBy: [],
-      log: [`⚔️ ¡Duelo PvP iniciado: ${p1.username} vs ${p2.username}! Turno de ${p1.username}.`],
+      log: [
+        `${modeBanner} ${p1.username} (${p1.stageName} · ${p1Moveset.energy.name}) vs ${p2.username} (${p2.stageName} · ${p2Moveset.energy.name}). ¡Turno inicial de ${p1.username}!`,
+      ],
     };
     matches.set(id, match);
     scheduleTurnTimer(match);
@@ -1966,14 +2388,14 @@ async function startServer() {
       };
       match.lastEvent = ev;
       match.log = [
-        `🔥 ¡${initiator.username} desató ${initiatorMoveset.ultimate.name} (${initTaps} vs ${defTaps} toques) e infligió -${actualDmg} HP a ${defender.username}!`,
+        `🔥 ¡${initiator.username} domina el ${initiatorMoveset.energy.clashLabel} (${initTaps} vs ${defTaps}) con ${initiatorMoveset.ultimate.name} e inflige -${actualDmg} HP a ${defender.username}!`,
         ...match.log.slice(0, 7),
       ];
       if (defender.hp <= 0) {
         finishMatch(
           match,
           initiator.username,
-          `🏆 ¡${initiator.username} derrotó a ${defender.username} con ${initiatorMoveset.ultimate.name}!`,
+          `🏆 ¡REMATE DEFINITIVO! ${initiator.username} derrota a ${defender.username} con ${initiatorMoveset.ultimate.name}!`,
           ev
         );
         return;
@@ -1997,14 +2419,14 @@ async function startServer() {
       };
       match.lastEvent = ev;
       match.log = [
-        `🛡️ ¡${defender.username} resistió con ${defenderMoveset.guard.name} (${defTaps} vs ${initTaps} toques) y contraatacó por -${reflect} HP!`,
+        `🛡️ ¡${defender.username} resiste con ${defenderMoveset.guard.name} (${defTaps} vs ${initTaps} toques) y devuelve -${reflect} HP!`,
         ...match.log.slice(0, 7),
       ];
       if (initiator.hp <= 0) {
         finishMatch(
           match,
           defender.username,
-          `🏆 ¡${defender.username} remontó el ${initiatorMoveset.energy.clashLabel} y venció!`,
+          `🏆 ¡REMONTADA ÉPICA! ${defender.username} desvía el ${initiatorMoveset.energy.clashLabel} y sella la victoria!`,
           ev
         );
         return;
@@ -2072,6 +2494,10 @@ async function startServer() {
           return;
         }
         const username = verified;
+        const incomingCosmetics =
+          msg.cosmetics && typeof msg.cosmetics === 'object'
+            ? (msg.cosmetics as PvpCosmeticLoadout)
+            : undefined;
         const seed: FighterSeed = {
           username,
           charId: String(msg.charId || 'goku'),
@@ -2079,6 +2505,8 @@ async function startServer() {
           level: Number(msg.level || 1),
           workoutsDone: Number(msg.workoutsDone || 0),
           prsCount: Number(msg.prsCount || 0),
+          cosmetics: incomingCosmetics,
+          localDateKey: sanitizeDateKey(msg.localDateKey) || undefined,
         };
         const prev = onlineUsers.get(username);
         if (prev && prev.ws !== ws) {
@@ -2206,7 +2634,7 @@ async function startServer() {
           });
           return;
         }
-        startMatch(challenger.seed, meEntry.seed);
+        startMatch(challenger.seed, meEntry.seed, 'friend_duel');
         return;
       }
 
@@ -2297,7 +2725,134 @@ async function startServer() {
           roomGraceTimers.delete(code);
         }
         rooms.delete(code);
-        startMatch(host.seed, meEntry.seed);
+        startMatch(host.seed, meEntry.seed, 'private_room');
+        return;
+      }
+
+      if (type === 'pvp:queue_join') {
+        const inActiveMatch = Array.from(matches.values()).some(
+          (m) => m.status === 'active' && m.playerOrder.includes(currentUsername)
+        );
+        if (inActiveMatch) {
+          sendToUser(currentUsername, {
+            type: 'pvp:error',
+            message: 'Ya tienes un combate PvP activo.',
+          });
+          return;
+        }
+        if (publicQueue.includes(currentUsername)) {
+          sendToUser(currentUsername, {
+            type: 'pvp:queue_status',
+            queued: true,
+            queueSize: publicQueue.length,
+          });
+          return;
+        }
+
+        const db = readPersistedState();
+        const myFriends = new Set(
+          (db.users?.[currentUsername]?.friends || []).map((f) => String(f).toLowerCase())
+        );
+
+        let opponentName: string | null = null;
+        for (const candidate of publicQueue) {
+          if (candidate === currentUsername) continue;
+          if (!onlineUsers.has(candidate)) continue;
+          const candidateBusy = Array.from(matches.values()).some(
+            (m) => m.status === 'active' && m.playerOrder.includes(candidate)
+          );
+          if (candidateBusy) continue;
+          const candidateFriends = new Set(
+            (db.users?.[candidate]?.friends || []).map((f) => String(f).toLowerCase())
+          );
+          if (
+            myFriends.has(candidate.toLowerCase()) ||
+            candidateFriends.has(currentUsername.toLowerCase())
+          ) {
+            continue;
+          }
+          opponentName = candidate;
+          break;
+        }
+
+        if (opponentName) {
+          const opponentEntry = onlineUsers.get(opponentName);
+          if (opponentEntry) {
+            removeFromPublicQueue(opponentName);
+            removeFromPublicQueue(currentUsername);
+            for (const [c, r] of rooms.entries()) {
+              if (r.hostUsername === currentUsername || r.hostUsername === opponentName) {
+                const rt = roomGraceTimers.get(c);
+                if (rt) {
+                  clearTimeout(rt);
+                  roomGraceTimers.delete(c);
+                }
+                rooms.delete(c);
+              }
+            }
+            startMatch(opponentEntry.seed, meEntry.seed, 'public_random');
+            return;
+          }
+        }
+
+        publicQueue.push(currentUsername);
+        sendToUser(currentUsername, {
+          type: 'pvp:queue_status',
+          queued: true,
+          queueSize: publicQueue.length,
+        });
+        broadcastQueueSize();
+        return;
+      }
+
+      if (type === 'pvp:queue_leave') {
+        if (removeFromPublicQueue(currentUsername)) {
+          broadcastQueueSize();
+        }
+        sendToUser(currentUsername, {
+          type: 'pvp:queue_status',
+          queued: false,
+          queueSize: publicQueue.length,
+        });
+        return;
+      }
+
+      if (type === 'pvp:emote') {
+        const matchId = String(msg.matchId || '');
+        const emoteId = String(msg.emoteId || '');
+        const match = matches.get(matchId);
+        if (!match || !match.playerOrder.includes(currentUsername)) return;
+        const item = getShopItemById(emoteId);
+        if (!item || item.category !== 'pvp_emote' || !item.emoteSoundKey) return;
+
+        const db = readPersistedState();
+        const dbUser = db.users?.[currentUsername];
+        const ownsInDb =
+          Array.isArray(dbUser?.inventory) &&
+          dbUser.inventory.some((e) => e.itemId === emoteId && Number(e.quantity || 0) > 0);
+        const ownsInSeed =
+          Array.isArray(meEntry.seed.cosmetics?.ownedEmotes) &&
+          meEntry.seed.cosmetics.ownedEmotes.includes(emoteId);
+        if (!ownsInDb && !ownsInSeed) return;
+
+        const ev: PvpEmoteEvent = {
+          id: makeEventId(),
+          sender: currentUsername,
+          emoteId,
+          label: item.name.replace(/^Emote PvP:\s*/i, ''),
+          icon: item.icon,
+          phrase: item.emotePhrase || item.name,
+          soundKey: item.emoteSoundKey,
+          ts: Date.now(),
+        };
+        match.lastEmote = ev;
+        for (const uname of match.playerOrder) {
+          sendToUser(uname, {
+            type: 'pvp:emote',
+            matchId: match.id,
+            event: ev,
+          });
+        }
         return;
       }
 
@@ -2375,7 +2930,7 @@ async function startServer() {
             finishMatch(
               match,
               attacker.username,
-              `🏆 ¡${attacker.username} ganó el duelo PvP con ${attackerMoveset.physical.name}!`,
+              `🏆 ¡REMATE FINAL! ${attacker.username} derriba a ${defender.username} con ${attackerMoveset.physical.name} (-${dmg} HP).`,
               ev
             );
             return;
@@ -2384,7 +2939,7 @@ async function startServer() {
             finishMatch(
               match,
               defender.username,
-              `🏆 ¡${defender.username} ganó con su contraataque!`,
+              `🏆 ¡CONTRAATAQUE LETAL! ${defender.username} frena la ofensiva y gana el duelo!`,
               ev
             );
             return;
@@ -2417,9 +2972,9 @@ async function startServer() {
             : wasGuarding
             ? `✨ ¡${skillName} atravesó la guardia! -${dmg} HP`
             : `✨ ${skillName}: -${dmg} HP (-40% ${attackerEnergy.shortName})`;
-          const logLine = `✨ ${attacker.username} usó ${skillName}${
-            isCrit ? ' (CRÍTICO)' : ''
-          } contra ${defender.username} (-${dmg} HP, -40% ${attackerEnergy.shortName}).`;
+          const logLine = `✨ ¡${attacker.username} desata ${skillName}${
+            isCrit ? ' con IMPACTO CRÍTICO' : ''
+          }! ${wasGuarding ? 'Rompe la guardia de' : 'Alcanza de lleno a'} ${defender.username} (-${dmg} HP, -40% ${attackerEnergy.shortName}).`;
 
           const ev: PvpCombatEvent = {
             id: makeEventId(),
@@ -2440,7 +2995,7 @@ async function startServer() {
             finishMatch(
               match,
               attacker.username,
-              `🏆 ¡${attacker.username} remató con ${skillName}!`,
+              `🏆 ¡REMATE DEFINITIVO! ${attacker.username} sella la victoria sobre ${defender.username} con ${skillName} (-${dmg} HP).`,
               ev
             );
             return;
@@ -2470,7 +3025,7 @@ async function startServer() {
           };
           match.lastEvent = ev;
           match.log = [
-            `🛡️ ${attacker.username} activó ${guardName} (${attackerEnergy.chargeLabel}: +${heal} HP, +20% ${attackerEnergy.shortName}).`,
+            `🛡️ ¡${attacker.username} alza ${guardName}! ${attackerEnergy.chargeLabel}: +${heal} HP y +20% ${attackerEnergy.shortName}.`,
             ...match.log.slice(0, 7),
           ];
           match.turn = opponentName;
@@ -2505,7 +3060,7 @@ async function startServer() {
             },
           };
           match.log = [
-            `🔥 ¡${attacker.username} desató ${ultName}! ¡Toquen rápido para ganar el ${attackerEnergy.clashLabel}!`,
+            `🔥 ¡MOMENTO DECISIVO! ${attacker.username} libera ${ultName} (${attacker.stageName}). ¡Toquen rápido para dominar el ${attackerEnergy.clashLabel}!`,
             ...match.log.slice(0, 7),
           ];
           broadcastMatch(match);
@@ -2565,7 +3120,7 @@ async function startServer() {
 
         if (match.playerOrder.every((n) => requested.has(n))) {
           if (p1Entry && p2Entry) {
-            startMatch(p1Entry.seed, p2Entry.seed);
+            startMatch(p1Entry.seed, p2Entry.seed, 'friend_duel');
             return;
           }
           sendToUser(currentUsername, {
@@ -2605,6 +3160,10 @@ async function startServer() {
         } else {
           // Newer socket already replaced this one
           return;
+        }
+
+        if (removeFromPublicQueue(uname)) {
+          broadcastQueueSize();
         }
 
         // Keep private room alive during 30s reconnect grace window

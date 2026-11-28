@@ -82,8 +82,11 @@ export interface WorkoutSet {
 
 export interface ActiveWorkoutExercise {
   exId: string;
+  exName?: string;
   targetReps: string;
   notes?: string;
+  baselinePr?: number;
+  baselineHasPrior?: boolean;
   sets: WorkoutSet[];
 }
 
@@ -151,6 +154,7 @@ export interface StoryChapter {
   bossTitle: string;
   bossHp: number;
   bossAtk: number;
+  bossDefensePct?: number;
   bossSignatureMove: string;
   allyCharId?: string;
   xpReward: number;
@@ -206,12 +210,171 @@ export interface FriendNotification {
   read: boolean;
 }
 
+export type ShopItemCategory =
+  | 'xp_capsule'
+  | 'combat_consumable'
+  | 'survival_support'
+  | 'cosmetic_aura'
+  | 'cosmetic_title'
+  | 'cosmetic_emblem'
+  | 'victory_quote'
+  | 'pvp_intro'
+  | 'pvp_emote'
+  | 'pvp_finisher';
+
+export type ShopItemRarity = 'común' | 'raro' | 'épico' | 'legendario';
+
+export type ShopItemEffectKind =
+  | 'xp'
+  | 'heal_hp'
+  | 'auto_revive'
+  | 'charge_energy'
+  | 'emergency_energy'
+  | 'temp_guard'
+  | 'atk_crit_buff'
+  | 'evasion_agility'
+  | 'accuracy_stability'
+  | 'survival_wave_ration'
+  | 'survival_wave_boost'
+  | 'cosmetic';
+
+export interface ShopItemDef {
+  id: string;
+  name: string;
+  anime: string;
+  category: ShopItemCategory;
+  rarity: ShopItemRarity;
+  price: number;
+  icon: string;
+  description: string;
+  effectKind: ShopItemEffectKind;
+  effectValue?: number;
+  secondaryValue?: number;
+  turns?: number;
+  perBattleLimit?: number;
+  storyLimit?: number;
+  survivalRunLimit?: number;
+  accentColor?: string;
+  cosmeticLabel?: string;
+  extraQuote?: string;
+  emoteSoundKey?: string;
+  emotePhrase?: string;
+}
+
+export interface UserInventoryEntry {
+  itemId: string;
+  quantity: number;
+  lastBuyPrice?: number;
+}
+
+export interface EquippedCosmetics {
+  auraId?: string | null;
+  titleId?: string | null;
+  emblemId?: string | null;
+  pvpIntroId?: string | null;
+  pvpFinisherId?: string | null;
+}
+
+export interface DailyShopPurchaseTracker {
+  dateKey: string;
+  itemsBought: number;
+}
+
+export interface DailyPvpXpTracker {
+  dateKey: string;
+  xpEarned: number;
+  coinsEarned?: number;
+}
+
+export interface DailySurvivalCoinTracker {
+  dateKey: string;
+  coinsEarned: number;
+}
+
+export interface PvpCosmeticLoadout {
+  title?: string | null;
+  titleName?: string | null;
+  emblem?: string | null;
+  emblemIcon?: string | null;
+  auraColor?: string | null;
+  auraLabel?: string | null;
+  introBanner?: string | null;
+  introColor?: string | null;
+  pvpIntro?: {
+    icon: string;
+    bannerText: string;
+    color: string;
+  } | null;
+  finisherId?: string | null;
+  finisherLabel?: string | null;
+  pvpFinisher?: {
+    id: string;
+    icon: string;
+    title: string;
+    color: string;
+  } | null;
+  ownedEmotes?: string[];
+}
+
+export type AccessorySlot = 'helm' | 'armor' | 'ring' | 'amulet';
+
+export type AccessoryVisualStyle =
+  | 'band'
+  | 'straw_hat'
+  | 'visor'
+  | 'mask'
+  | 'crown'
+  | 'cape'
+  | 'vest'
+  | 'aura_ring'
+  | 'orb_orbit'
+  | 'star_crest';
+
+export interface AnimeAccessoryDef {
+  id: string;
+  name: string;
+  anime: string;
+  slot: AccessorySlot;
+  rarity: ShopItemRarity;
+  price: number;
+  icon: string;
+  accentColor: string;
+  secondaryColor: string;
+  visualShape: AccessoryVisualStyle;
+  description: string;
+  roomVisualNote: string;
+}
+
+export interface EquippedAccessories {
+  helmId?: string | null;
+  armorId?: string | null;
+  ringId?: string | null;
+  amuletId?: string | null;
+}
+
+export interface DailyAccessoryPurchaseTracker {
+  dateKey: string;
+  itemsBought: number;
+}
+
 export interface UserProfile {
   username: string;
   email: string;
   pass?: string;
   charId: string;
   xp: number;
+  coins?: number;
+  secondaryCoins?: number;
+  unlockedChars?: string[];
+  charXpOffsets?: Record<string, number>;
+  inventory?: UserInventoryEntry[];
+  equippedCosmetics?: EquippedCosmetics;
+  ownedAccessories?: string[];
+  equippedAccessories?: EquippedAccessories;
+  shopDailyPurchases?: DailyShopPurchaseTracker;
+  accessoryShopDailyPurchases?: DailyAccessoryPurchaseTracker;
+  pvpDailyXp?: DailyPvpXpTracker;
+  survivalDailyCoins?: DailySurvivalCoinTracker;
   workoutsDone: number;
   prs: Record<string, number>;
   oneRmRecords?: Record<string, number>;
@@ -225,6 +388,12 @@ export interface UserProfile {
   storyRoutineId?: string;
   pvpWins?: number;
   pvpLosses?: number;
+  survivalBestWave?: number;
+  roomBestFloor?: number;
+  roomBossMilestonesDefeated?: number[];
+  dailyStreakCount?: number;
+  dailyStreakBest?: number;
+  dailyStreakLastDate?: string | null;
   story?: StoryProgress;
   profileSetup?: AthleteProfileSetup;
   wellness?: DailyWellnessState;
@@ -284,6 +453,7 @@ export interface PvpFighterState {
   ultBoostPct?: number;
   streakLabel?: string | null;
   streakCount?: number;
+  cosmetics?: PvpCosmeticLoadout;
 }
 
 export interface PvpClashState {
@@ -321,9 +491,23 @@ export interface PvpCombatEvent {
   label: string;
 }
 
+export type PvpMatchKind = 'public_random' | 'friend_duel' | 'private_room';
+
+export interface PvpEmoteEvent {
+  id: string;
+  sender: string;
+  emoteId: string;
+  label: string;
+  icon: string;
+  phrase: string;
+  soundKey: string;
+  ts: number;
+}
+
 export interface PvpMatchState {
   id: string;
   status: 'active' | 'finished';
+  matchKind?: PvpMatchKind;
   turn: string;
   turnEndsAt?: number;
   turnDurationMs?: number;
@@ -334,8 +518,11 @@ export interface PvpMatchState {
   playerStatus?: Record<string, PvpPlayerConnectionStatus>;
   clash: PvpClashState | null;
   lastEvent?: PvpCombatEvent | null;
+  lastEmote?: PvpEmoteEvent | null;
   damageDealt?: Record<string, number>;
   xpRewards?: Record<string, number>;
+  coinRewards?: Record<string, number>;
+  xpCapNotices?: Record<string, string>;
   rematchRequestedBy?: string[];
   log: string[];
   rewardsGranted?: boolean;
@@ -363,11 +550,21 @@ export interface AppDB {
   activeWorkouts: Record<string, ActiveWorkout>;
 }
 
-export type MainTab = 'entrenar' | 'historia' | 'pvp' | 'personaje' | 'ranking';
+export type MainTab =
+  | 'entrenar'
+  | 'historia'
+  | 'pvp'
+  | 'personaje'
+  | 'ranking'
+  | 'tienda';
 export type RankingSubTab = 'global' | 'publicas' | 'social';
 
 export interface WorkoutSummaryInfo {
   earnedXp: number;
+  earnedCoins?: number;
+  baseVolumeXp: number;
+  prBonusXp: number;
+  surpassedExerciseCount: number;
   completedSets: number;
   prCount: number;
   oneRmRecordCount?: number;
@@ -377,4 +574,8 @@ export interface WorkoutSummaryInfo {
   evolved: boolean;
   stageName: string;
   charIcon: string;
+  auraColor: string;
+  streakCount: number;
+  prevStreakCount: number;
+  pausedSundayToday: boolean;
 }
